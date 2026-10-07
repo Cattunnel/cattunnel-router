@@ -1,0 +1,41 @@
+diff --git a/cmake/conan_provider.cmake b/cmake/conan_provider.cmake
+index d4b4643..9c2e846 100644
+--- a/cmake/conan_provider.cmake
++++ b/cmake/conan_provider.cmake
+@@ -312,7 +312,20 @@ endfunction()
+ # already been replaced by the wrapper.
+ function(is_zig_compiler LANG RESULT)
+     detect_zig_compiler(${LANG} _zig_executable _zig_args)
+-    if(_zig_executable OR _CONAN_ZIG_${LANG}_WRAPPER)
++    # CatTunnel: a nested build (this package built as a dependency of a zig
++    # cross build) gets the parent's `<triple>-cc`/`-c++` wrapper script as the
++    # compiler, not `zig;cc;...` - recognise it by its content.
++    set(_wrapper_is_zig FALSE)
++    if(EXISTS "${CMAKE_${LANG}_COMPILER}" AND NOT IS_DIRECTORY "${CMAKE_${LANG}_COMPILER}")
++        file(SIZE "${CMAKE_${LANG}_COMPILER}" _wrapper_size)
++        if(_wrapper_size LESS 1024)
++            file(READ "${CMAKE_${LANG}_COMPILER}" _wrapper_text)
++            if(_wrapper_text MATCHES "exec \"zig\" \"(cc|c\\+\\+)\"")
++                set(_wrapper_is_zig TRUE)
++            endif()
++        endif()
++    endif()
++    if(_zig_executable OR _CONAN_ZIG_${LANG}_WRAPPER OR _wrapper_is_zig)
+         set(${RESULT} TRUE PARENT_SCOPE)
+     else()
+         set(${RESULT} FALSE PARENT_SCOPE)
+diff --git a/conanfile.py b/conanfile.py
+index 6619965..a3ed7d7 100644
+--- a/conanfile.py
++++ b/conanfile.py
+@@ -55,7 +55,9 @@ class NativeLibsCommon(ConanFile):
+         # `conan create . --version local` builds from the working tree instead of
+         # fetching a tag (there is no "vlocal" tag). Copy the git-tracked files into
+         # the exported sources so source() can pick them up and skip the clone.
+-        if self.version == "local":
++        # CatTunnel: NLC_FROM_WORKTREE=1 also stages the working tree for a tagged
++        # version (our zig-wrapper fix in cmake/conan_provider.cmake).
++        if self.version == "local" or os.environ.get("NLC_FROM_WORKTREE") == "1":
+             git = Git(self)
+             for i in git.included_files():
+                 dst = os.path.join(self.export_sources_folder, i)

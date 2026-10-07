@@ -1,0 +1,15 @@
+diff --git a/conanfile.py b/conanfile.py
+index f4ca1bb0..72e0a445 100644
+--- a/conanfile.py
++++ b/conanfile.py
+@@ -75,7 +75,9 @@ class DnsLibsConan(ConanFile):
+                 update_conandata(self, {"local_version": described})
+ 
+     def export_sources(self):
+-        if self.version == "local":
++        # CatTunnel: DNSLIBS_FROM_WORKTREE=1 stages the working tree (with our zig-wrapper
++        # aware conan_provider.cmake) for a tagged version too.
++        if self.version == "local" or os.environ.get("DNSLIBS_FROM_WORKTREE") == "1":
+             git = Git(self)
+             included = git.included_files()
+             for i in included:

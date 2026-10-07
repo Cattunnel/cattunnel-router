@@ -1,0 +1,298 @@
+#!/bin/sh
+# CatTunnel для роутеров — установка одной командой (OpenWrt 23.05/24.10/25.x, Keenetic и
+# ASUS Merlin с Entware).
+#
+#   sh install.sh [--check] [--reinstall] [--no-luci] [--file <пакет>] [--from <адрес папки>]
+#
+#   --check    только проверить роутер и сказать, какой пакет подходит; ничего не ставить
+#   --reinstall поставить заново, даже если эта версия уже стоит (починить установку)
+#   --no-luci  без страниц в LuCI (на OpenWrt они ставятся, если LuCI есть)
+#   --file     поставить уже скачанный пакет (например, scp в /tmp) — хэш всё равно сверяется
+#   --from     скачивать с этого адреса, а не с зеркал CatTunnel
+#
+# Что делает:
+#  1. Определяет систему (OpenWrt с opkg или с apk, Entware) и процессор (aarch64, armv7,
+#     mipsel, x86_64; для MIPS — порядок байт).
+#  2. Проверяет ДО установки: место, память, свободный /tmp, ядро, tun, чем скачивать.
+#     Не подходит — ничего не ставит и объясняет, что сделать.
+#  3. Скачивает нужный пакет с зеркал по очереди и сверяет SHA-256 с хэшами, вшитыми в этот
+#     файл (сам install.sh подписан Ed25519 — install.sh.sig, ключ cattunnel-release.pub.pem).
+#  4. Ставит, проверяет, что движок запускается; не запустился — удаляет пакет обратно.
+#
+# Подписка потом: cattunnel import '<ссылка>' '<AGE-SECRET-KEY-1…>' (или в LuCI: Службы → CatTunnel).
+set -u
+
+VER='@VER@'
+MIRRORS='@MIRRORS@'
+# вид  процессор  файл  sha256  нужно_КБ (установленный размер + запас)
+PKGS='
+@PKGS@
+'
+
+say()  { echo "cattunnel-install: $*"; }
+warn() { echo "cattunnel-install: внимание — $*" >&2; }
+fail() { echo "cattunnel-install: ОШИБКА — $*" >&2; [ -n "${TMPD:-}" ] && rm -rf "$TMPD"; exit 1; }
+
+CHECK=0; REINSTALL=0; LUCI=1; FILE=""; FROM=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--check)   CHECK=1 ;;
+	--no-luci) LUCI=0 ;;
+	--reinstall) REINSTALL=1 ;;
+	--file)    [ $# -ge 2 ] || fail "--file <пакет>"; FILE=$2; shift ;;
+	--from)    [ $# -ge 2 ] || fail "--from <адрес папки>"; FROM=${2%/}; shift ;;
+	-h|--help) sed -n '2,25s/^# \{0,1\}//p' "$0"; exit 0 ;;
+	*)         fail "непонятный параметр: $1 (sh install.sh --help)" ;;
+	esac
+	shift
+done
+[ "$(id -u 2>/dev/null || echo 0)" = 0 ] || fail "нужен root"
+
+# --- 1. система -------------------------------------------------------------------------
+if [ -f /etc/openwrt_release ]; then
+	rel=$(sed -n "s/^DISTRIB_RELEASE='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" /etc/openwrt_release)
+	if command -v apk >/dev/null 2>&1 && [ -d /etc/apk ]; then
+		KIND=openwrt25; PM=apk; PMARCH=$(apk --print-arch 2>/dev/null)
+	elif command -v opkg >/dev/null 2>&1; then
+		KIND=openwrt; PM=opkg; PMARCH=$(opkg print-architecture 2>/dev/null | awk '$2 != "all" && $2 != "noarch" {a=$2} END {print a}')
+	else
+		fail "OpenWrt $rel без opkg и apk — не знаю, как ставить"
+	fi
+	SYS="OpenWrt $rel ($PM)"; LIB=/usr/libexec/cattunnel; TARGET=/
+elif [ -x /opt/bin/opkg ] && [ -d /opt/etc ]; then
+	KIND=entware; PM=/opt/bin/opkg; PMARCH=$(/opt/bin/opkg print-architecture 2>/dev/null | awk '$2 != "all" {a=$2} END {print a}')
+	SYS="Entware ($PMARCH)"; LIB=/opt/libexec/cattunnel; TARGET=/opt
+else
+	fail "не OpenWrt и не Entware (нет /etc/openwrt_release и /opt/bin/opkg). Keenetic: компонент «OPKG» + Entware; Merlin: amtm → Entware"
+fi
+
+# --- процессор --------------------------------------------------------------------------
+m=$(uname -m)
+case "$m" in
+	aarch64|arm64) ARCH=aarch64 ;;
+	armv7*|armv8l) ARCH=armv7 ;;
+	x86_64)        ARCH=x86_64 ;;
+	mips*)
+		case "$PMARCH" in
+			*mipsel*|*mips64el*) ARCH=mipsel ;;
+			"") fail "MIPS, но порядок байт не определить ($PM не назвал архитектуру)" ;;
+			*)  fail "MIPS big-endian ($PMARCH) — пакета под него пока нет, напишите нам" ;;
+		esac ;;
+	armv5*|armv6*) fail "процессор $m слишком старый (нужен ARMv7 или новее)" ;;
+	*) fail "процессор $m — пакета под него нет" ;;
+esac
+
+pick() {  # <вид> -> "файл sha256 нужно_КБ" или пусто
+	echo "$PKGS" | awk -v k="$1" -v a="$ARCH" '$1 == k && ($2 == a || $2 == "all") {print $3, $4, $5; exit}'
+}
+row=$(pick "$KIND")
+[ -n "$row" ] || fail "в этом install.sh нет пакета $KIND/$ARCH"
+set -- $row; PKG=$1; PKG_SHA=$2; NEED_KB=$3
+[ -z "$FILE" ] || [ "$(basename "$FILE")" = "$PKG" ] || \
+	fail "этому роутеру нужен $PKG, а указан $(basename "$FILE") — пакет не для этой системы/процессора"
+LUCI_PKG=""; LUCI_SHA=""; LUCI_KB=0
+if [ $LUCI = 1 ] && [ "$KIND" != entware ] && [ -d /www/luci-static ]; then
+	row=$(pick "luci-$KIND"); [ -n "$row" ] && { set -- $row; LUCI_PKG=$1; LUCI_SHA=$2; LUCI_KB=$3; }
+fi
+
+# --- 2. проверки до установки -----------------------------------------------------------
+problems=0
+bad() { echo "  ✗ $*" >&2; problems=$((problems + 1)); }
+ok()  { echo "  ✓ $*"; }
+say "CatTunnel $VER: $SYS, процессор $m → пакет $PKG"
+
+kv=$(uname -r | awk -F. '{print $1 * 100 + $2}')
+if [ "${kv:-0}" -ge 302 ]; then ok "ядро $(uname -r)"; else bad "ядро $(uname -r) слишком старое, нужно 3.2 или новее"; fi
+
+mem=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+swap=$(awk '/^SwapTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+if [ "${mem:-0}" -lt 60 ]; then bad "памяти ${mem} МБ, нужно от 64 МБ"
+else
+	ok "память ${mem} МБ$( [ "${swap:-0}" -gt 0 ] && echo ", swap ${swap} МБ")"
+	[ -x /etc/init.d/nikki ] && [ "$mem" -lt 200 ] && [ "${swap:-0}" = 0 ] && \
+		warn "рядом nikki/mihomo, а памяти ${mem} МБ и нет swap — вдвоём может не хватить; swap на флешке поможет"
+fi
+
+need=$((NEED_KB + LUCI_KB))
+# на обновлении старая версия освободит своё место
+old_kb=$(du -sk "$LIB" 2>/dev/null | cut -f1); [ -n "$old_kb" ] && need=$((need - old_kb))
+free=$(df -Pk "$TARGET" 2>/dev/null | awk 'NR == 2 {print $4}')
+if [ -z "$free" ]; then warn "не удалось узнать свободное место в $TARGET — проверяю дальше без этого"
+elif [ "$free" -ge "$need" ]; then ok "место в $TARGET: свободно $((free / 1024)) МБ, нужно $((need / 1024 + 1)) МБ"
+else
+	bad "мало места в $TARGET: свободно $((free / 1024)) МБ, нужно $((need / 1024 + 1)) МБ"
+	if [ "$KIND" = entware ]; then
+		echo "    → Entware на флешке (не во внутренней памяти) или удалить лишние пакеты opkg" >&2
+	else
+		echo "    → extroot на флешку: https://openwrt.org/docs/guide-user/additional-software/extroot_configuration" >&2
+		echo "    → или удалить лишние пакеты; что занимает место: du -sk /overlay/upper/usr/* | sort -n" >&2
+	fi
+fi
+
+tmpfree=$(df -Pk /tmp 2>/dev/null | awk 'NR == 2 {print $4}')
+pkgkb=$(( (NEED_KB + LUCI_KB) / 2 ))   # пакет сжат примерно вдвое
+if [ -n "$tmpfree" ] && [ "$tmpfree" -lt $((pkgkb + 1024)) ]; then bad "в /tmp (это ОЗУ) свободно $((tmpfree / 1024)) МБ — для скачивания нужно ~$((pkgkb / 1024 + 1)) МБ"
+else ok "/tmp: место для скачивания есть"; fi
+
+if [ -c /dev/net/tun ]; then ok "tun есть"
+elif [ "$KIND" = entware ]; then warn "нет /dev/net/tun — режим tun работать не будет (SOCKS — будет)"
+else ok "tun (kmod-tun) поставится вместе с пакетом"; fi
+
+FETCH=""
+if command -v curl >/dev/null 2>&1; then FETCH=curl; ok "скачивание: curl"
+elif [ -x /opt/bin/curl ]; then FETCH=/opt/bin/curl; ok "скачивание: curl"
+elif [ "$KIND" != entware ] && command -v uclient-fetch >/dev/null 2>&1; then FETCH=uclient; ok "скачивание: uclient-fetch (curl поставится как зависимость)"
+elif [ -n "$FILE" ]; then ok "скачивание не нужно (--file)"
+else FETCH=curl; ok "скачивание: curl поставлю первым (зависимость пакета)"; fi
+
+SHA=""
+if command -v sha256sum >/dev/null 2>&1; then SHA=sha256sum
+elif command -v openssl >/dev/null 2>&1; then SHA=openssl
+else bad "нечем проверить SHA-256 (нет sha256sum и openssl)"; fi
+
+installed_ver() {  # <пакет> -> версия или пусто
+	case "$KIND" in
+		# apk 3: «cattunnel-1.5.0_beta3-r0 noarch {…} (…) [installed]»
+		openwrt25) apk list -I "$1" 2>/dev/null | awk -v p="$1-" 'index($1, p) == 1 {print substr($1, length(p) + 1); exit}' ;;
+		*)         $PM list-installed "$1" 2>/dev/null | awk -v p="$1" '$1 == p {print $3; exit}' ;;
+	esac
+}
+# версия этого install.sh так, как её пишет пакетный менеджер
+case "$KIND" in
+	openwrt25) WANT=$(printf '%s' "$VER" | sed -E 's/-b([0-9]+)$/_beta\1/; s/-rc([0-9]+)$/_rc\1/')-r0 ;;
+	*)         WANT=$VER ;;
+esac
+HAVE=$(installed_ver cattunnel)
+SAME=0
+# стоит, но сломан (не тот процессор, движок удалён или не запускается) — переставить в любом случае
+if [ -n "$HAVE" ] && { [ -f "${TARGET%/}/etc/cattunnel/WRONG_ARCH" ] || ! "$LIB/trusttunnel_client" --version >/dev/null 2>&1; }; then
+	say "стоит $HAVE, но не работает (пакет не для этого процессора или повреждён) — переставлю"
+	REINSTALL=1; AUTOFIX=1
+fi
+if [ -n "$HAVE" ]; then
+	if [ "$HAVE" = "$WANT" ]; then
+		SAME=1
+		if [ "${AUTOFIX:-0}" = 1 ]; then :
+		elif [ $REINSTALL = 1 ]; then say "уже стоит $VER — ставлю заново (--reinstall), настройки и подписка сохранятся"
+		else say "уже стоит $VER — пакет не трогаю (переустановить: --reinstall)"; fi
+	else
+		say "стоит $HAVE → обновлю до $VER, настройки и подписка сохранятся"
+	fi
+fi
+[ -x /etc/init.d/nikki ] && say "найден nikki: после установки — cattunnel nikki on (встроиться в его профиль)"
+
+if [ $problems -gt 0 ]; then
+	echo >&2; fail "проверка не пройдена ($problems) — ничего не установлено"
+fi
+if [ $CHECK = 1 ]; then say "проверка пройдена; --check — ничего не ставлю"; exit 0; fi
+
+pm_install() {  # <файл>...
+	case "$KIND" in
+		openwrt25) apk add --allow-untrusted "$@" ;;
+		*)         $PM install "$@" ;;
+	esac
+}
+pm_has() {  # <пакет>
+	case "$KIND" in
+		openwrt25) apk info -e "$1" >/dev/null 2>&1 ;;
+		*)         $PM list-installed 2>/dev/null | grep -q "^$1 " ;;
+	esac
+}
+# зависимости — заранее и по одной, чтобы было видно, какая не встала
+if [ "$KIND" = entware ]; then deps="curl"; else deps="curl kmod-tun"; fi
+missing=""
+for d in $deps; do pm_has "$d" || missing="$missing $d"; done
+if [ -n "$missing" ]; then
+	say "ставлю зависимости:$missing"
+	if [ "$KIND" = openwrt25 ]; then apk update >/dev/null 2>&1; else $PM update >/dev/null 2>&1; fi
+	# shellcheck disable=SC2086
+	pm_install $missing || fail "не встали зависимости:$missing (нет интернета до репозитория OpenWrt/Entware?)"
+fi
+
+[ "$FETCH" = curl ] && ! command -v curl >/dev/null 2>&1 && [ -x /opt/bin/curl ] && FETCH=/opt/bin/curl
+# --- 3. скачать и сверить ---------------------------------------------------------------
+TMPD=$(mktemp -d /tmp/cattunnel.XXXXXX) || fail "не создать папку в /tmp"
+trap 'rm -rf "$TMPD"' EXIT INT TERM
+
+sha_of() {
+	if [ "$SHA" = sha256sum ]; then sha256sum "$1" | cut -d' ' -f1
+	else openssl dgst -sha256 "$1" | sed 's/.*= *//'; fi
+}
+get() {  # <url> <файл>
+	case "$FETCH" in
+		uclient) uclient-fetch -q -T 30 -O "$2" "$1" ;;
+		*)       "$FETCH" -fsSL --connect-timeout 10 --max-time 300 -o "$2" "$1" ;;
+	esac
+}
+fetch() {  # <файл> <sha256> -> $TMPD/<файл>
+	out=$TMPD/$1
+	if [ -n "$FILE" ] && [ "$(basename "$FILE")" = "$1" ]; then
+		cp "$FILE" "$out" || fail "не прочитать $FILE"
+		[ "$(sha_of "$out")" = "$2" ] || fail "$FILE: SHA-256 не совпал — файл повреждён или не тот"
+		return 0
+	fi
+	[ -n "$FETCH" ] || fail "$1: нечем скачать (поставьте curl) — или положите файл и укажите --file"
+	for base in ${FROM:-$MIRRORS}; do
+		say "скачиваю $1 с $(echo "$base" | cut -d/ -f3)…"
+		rm -f "$out"
+		if get "$base/$1" "$out" 2>/dev/null && [ -s "$out" ]; then
+			if [ "$(sha_of "$out")" = "$2" ]; then ok "SHA-256 совпал"; return 0; fi
+			warn "$base: SHA-256 не совпал — пропускаю это зеркало"
+		else
+			warn "$base: не скачалось"
+		fi
+	done
+	fail "$1 не скачался ни с одного зеркала"
+}
+{ [ $SAME = 1 ] && [ $REINSTALL = 0 ]; } || fetch "$PKG" "$PKG_SHA"
+# LuCI: ставим, если её пакета нет или он другой версии (или --reinstall)
+if [ -n "$LUCI_PKG" ] && [ $REINSTALL = 0 ] && [ "$(installed_ver luci-app-cattunnel)" = "$WANT" ]; then LUCI_PKG=""; fi
+[ -n "$LUCI_PKG" ] && fetch "$LUCI_PKG" "$LUCI_SHA"
+
+# --- 4. установить и проверить ----------------------------------------------------------
+rc=0
+if [ $SAME = 1 ] && [ $REINSTALL = 0 ]; then
+	:
+elif [ $SAME = 1 ]; then
+	say "ставлю $PKG заново"
+	case "$KIND" in
+		# apk не переставляет ту же версию; del+add (настройки в /etc/cattunnel пакету не принадлежат — останутся)
+		openwrt25) apk del cattunnel >/dev/null 2>&1; pm_install "$TMPD/$PKG"; rc=$? ;;
+		*)         $PM install --force-reinstall "$TMPD/$PKG"; rc=$? ;;
+	esac
+else
+	say "ставлю $PKG"
+	pm_install "$TMPD/$PKG"; rc=$?
+fi
+if [ -f "${TARGET%/}/etc/cattunnel/WRONG_ARCH" ] || [ -f /etc/cattunnel/WRONG_ARCH ] || \
+   ! "$LIB/trusttunnel_client" --version >/dev/null 2>&1; then
+	warn "движок после установки не запускается — удаляю пакет обратно"
+	case "$KIND" in openwrt25) apk del cattunnel >/dev/null 2>&1 ;; *) $PM remove cattunnel >/dev/null 2>&1 ;; esac
+	rm -f /etc/cattunnel/WRONG_ARCH /opt/etc/cattunnel/WRONG_ARCH
+	fail "установка не удалась (код $rc); пришлите нам вывод: sh install.sh --check; uname -a"
+fi
+[ $rc = 0 ] || warn "$PM вернул код $rc, но движок запускается — продолжаю"
+ok "движок: $("$LIB/trusttunnel_client" --version 2>/dev/null | head -n 1)"
+
+if [ -n "$LUCI_PKG" ]; then
+	say "ставлю $LUCI_PKG"
+	if [ $REINSTALL = 1 ] && [ "$KIND" != openwrt25 ]; then set -- --force-reinstall; else set --; fi
+	[ $REINSTALL = 1 ] && [ "$KIND" = openwrt25 ] && apk del luci-app-cattunnel >/dev/null 2>&1
+	pm_install "$@" "$TMPD/$LUCI_PKG" || warn "страницы LuCI не встали — CatTunnel работает и без них (команда cattunnel)"
+fi
+
+echo
+say "готово. Дальше:"
+if [ -s "${TARGET%/}/etc/cattunnel/servers.bundle" ] || [ -s /etc/cattunnel/servers.bundle ]; then
+	echo "  подписка уже есть — cattunnel list; cattunnel test"
+else
+	echo "  cattunnel import '<ссылка подписки>' '<AGE-SECRET-KEY-1…>'   # те же, что в приложении"
+	echo "  cattunnel list; cattunnel use <сервер>"
+fi
+case "$KIND" in
+	entware) echo "  /opt/etc/init.d/S99cattunnel start; cattunnel test" ;;
+	*)       echo "  /etc/init.d/cattunnel start; cattunnel test"
+	         [ -n "$LUCI_PKG" ] && echo "  или в LuCI: Службы → CatTunnel"
+	         [ -x /etc/init.d/nikki ] && echo "  nikki: cattunnel nikki on" ;;
+esac
+exit 0

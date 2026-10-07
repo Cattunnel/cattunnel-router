@@ -1,0 +1,94 @@
+{
+	"luci-app-cattunnel": {
+		"description": "CatTunnel: status, servers, settings, diagnostics",
+		"read": {
+			"file": {
+				"/usr/bin/cattunnel json status": [
+					"exec"
+				],
+				"/usr/bin/cattunnel json servers": [
+					"exec"
+				],
+				"/usr/bin/cattunnel json leases": [
+					"exec"
+				],
+				"/usr/bin/cattunnel log *": [
+					"exec"
+				],
+				"/usr/bin/cattunnel mihomo": [
+					"exec"
+				],
+				"/usr/bin/cattunnel test": [
+					"exec"
+				],
+				"/usr/bin/cattunnel json doctor": [
+					"exec"
+				],
+				"/usr/bin/cattunnel nikki status": [
+					"exec"
+				],
+				"/usr/bin/cattunnel json direct": [
+					"exec"
+				]
+			}
+		},
+		"write": {
+			"file": {
+				"/usr/bin/cattunnel import *": [
+					"exec"
+				],
+				"/usr/bin/cattunnel update": [
+					"exec"
+				],
+				"/usr/bin/cattunnel use *": [
+					"exec"
+				],
+				"/usr/bin/cattunnel set *": [
+					"exec"
+				],
+				"/usr/bin/cattunnel firewall *": [
+					"exec"
+				],
+				"/etc/init.d/cattunnel start": [
+					"exec"
+				],
+				"/etc/init.d/cattunnel stop": [
+					"exec"
+				],
+				"/etc/init.d/cattunnel restart": [
+					"exec"
+				],
+				"/etc/init.d/cattunnel enable": [
+					"exec"
+				],
+				"/etc/init.d/cattunnel disable": [
+					"exec"
+				],
+				"/usr/bin/cattunnel doctor --apply": [
+					"exec"
+				],
+				"/usr/bin/cattunnel dns *": [
+					"exec"
+				],
+				"/usr/bin/cattunnel nikki on": [
+					"exec"
+				],
+				"/usr/bin/cattunnel nikki off": [
+					"exec"
+				],
+				"/usr/bin/cattunnel web *": [
+					"exec"
+				],
+				"/usr/bin/cattunnel direct *": [
+					"exec"
+				],
+				"/usr/bin/cattunnel upgrade": [
+					"exec"
+				],
+				"/usr/bin/cattunnel upgrade check": [
+					"exec"
+				]
+			}
+		}
+	}
+}

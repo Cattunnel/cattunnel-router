@@ -1,0 +1,55 @@
+{
+	"admin/services/cattunnel": {
+		"title": "CatTunnel",
+		"order": 60,
+		"action": {
+			"type": "alias",
+			"path": "admin/services/cattunnel/status"
+		},
+		"depends": {
+			"acl": [
+				"luci-app-cattunnel"
+			]
+		}
+	},
+	"admin/services/cattunnel/status": {
+		"title": "Состояние",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "cattunnel/status"
+		}
+	},
+	"admin/services/cattunnel/servers": {
+		"title": "Серверы",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "cattunnel/servers"
+		}
+	},
+	"admin/services/cattunnel/settings": {
+		"title": "Настройки",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "cattunnel/settings"
+		}
+	},
+	"admin/services/cattunnel/diagnostics": {
+		"title": "Диагностика",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "cattunnel/diagnostics"
+		}
+	},
+	"admin/services/cattunnel/help": {
+		"title": "Справка",
+		"order": 50,
+		"action": {
+			"type": "view",
+			"path": "cattunnel/help"
+		}
+	}
+}

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Entware (Keenetic, ASUS Merlin): веб-страница CatTunnel (cattunnel web on), если включена.
+case "$1" in
+	start)   /opt/bin/cattunnel web start ;;
+	stop)    /opt/bin/cattunnel web stop ;;
+	restart) "$0" stop; "$0" start ;;
+	*) echo "Usage: $0 {start|stop|restart}" ;;
+esac

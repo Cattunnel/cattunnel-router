@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+# CatTunnel: движок TrustTunnel через `cattunnel run` (подписка, «авто» анти-DPI, режим socks/tun).
+USE_PROCD=1
+START=95
+STOP=10
+
+start_service() {
+	if [ -f /etc/cattunnel/WRONG_ARCH ]; then
+		logger -t cattunnel "$(cat /etc/cattunnel/WRONG_ARCH)"
+		return 0
+	fi
+	if [ ! -s /etc/cattunnel/servers.bundle ]; then
+		logger -t cattunnel "нет подписки: cattunnel import <ссылка> <age-ключ>"
+		return 0
+	fi
+	procd_open_instance
+	procd_set_param command /usr/bin/cattunnel run
+	# сбой — перезапуск через 5 с, без лимита (сеть пропала, сервер «заморожен» и т.п.)
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	killall trusttunnel_client 2>/dev/null || true
+}

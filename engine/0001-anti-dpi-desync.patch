@@ -1,0 +1,1236 @@
+diff --git a/core/include/vpn/internal/vpn_client.h b/core/include/vpn/internal/vpn_client.h
+index 77e359a1..fdc85a28 100644
+--- a/core/include/vpn/internal/vpn_client.h
++++ b/core/include/vpn/internal/vpn_client.h
+@@ -86,6 +86,10 @@ struct EndpointConnectionConfig {
+     std::string password;
+     IpVersionSet ip_availability;
+     bool anti_dpi = false;
++    uint8_t anti_dpi_mode = 0;
++    DesyncPlan anti_dpi_desync{};
++    uint16_t h2_padding_frames = 0;
++    bool block_quic = false;
+ };
+ 
+ static constexpr const char *LOG_NAME = "VPNCLIENT";
+diff --git a/core/include/vpn/vpn.h b/core/include/vpn/vpn.h
+index ae43aa88..0434f49a 100644
+--- a/core/include/vpn/vpn.h
++++ b/core/include/vpn/vpn.h
+@@ -256,6 +256,14 @@ typedef struct {
+     VpnUpstreamSessionRecoverySettings recovery;
+     /** Enable anti-dpi measures */
+     bool anti_dpi;
++    /** Anti-DPI technique when `anti_dpi` is set, see `TcpSocketConnectParameters.anti_dpi_mode` */
++    uint8_t anti_dpi_mode;
++    /** Custom anti-DPI split, overrides `anti_dpi_mode` when not empty */
++    DesyncPlan anti_dpi_desync;
++    /** HTTP/2: pad the first this many frames of a session with random bytes (0 - off) */
++    uint16_t h2_padding_frames;
++    /** Refuse UDP connections to port 443 (QUIC), clients fall back to TCP */
++    bool block_quic;
+ } VpnUpstreamConfig;
+ 
+ /**
+@@ -283,8 +291,16 @@ typedef enum {
+                                             `VpnTunnelConnectionClosedEvent`) */
+     VPN_EVENT_CONNECTION_INFO,           /** Notifies that connection info is ready (raised with
+                                             `VpnConnectionInfoEvent`) */
++    VPN_EVENT_PING_FAILED,               /** CatTunnel: one attempt to reach the endpoint failed, also while
++                                            connecting, where the state doesn't change between attempts
++                                            (raised with `VpnPingFailedEvent`) */
+ } VpnEvent;
+ 
++/** CatTunnel: why an attempt to reach the endpoint failed (`VPN_EVENT_PING_FAILED`). */
++typedef struct {
++    const char *failure; // The `[failure=...]` tag of the error text: connect, hello_reset, hello_no_answer, ...
++} VpnPingFailedEvent;
++
+ typedef struct {
+     X509 *cert;                                // Certificate to verify
+     STACK_OF(X509) * chain;                    // Untrusted chain
+diff --git a/core/src/http2_upstream.cpp b/core/src/http2_upstream.cpp
+index 682a3360..5a17d8ce 100644
+--- a/core/src/http2_upstream.cpp
++++ b/core/src/http2_upstream.cpp
+@@ -336,7 +336,8 @@ int Http2Upstream::establish_http_session() {
+     assert(m_session == nullptr);
+ 
+     HttpSessionParams params = {
+-            uint64_t(this->id), {http_handler, this}, HTTP2_STREAM_INITIAL_WINDOW_SIZE, HTTP_VER_2_0};
++            uint64_t(this->id), {http_handler, this}, HTTP2_STREAM_INITIAL_WINDOW_SIZE, HTTP_VER_2_0,
++            vpn->upstream_config.h2_padding_frames};
+     m_session.reset(http_session_open(&params));
+ 
+     int r = 0;
+@@ -531,6 +532,8 @@ bool Http2Upstream::open_session(std::optional<Millis> timeout) {
+             .peer = &sa_peer,
+             .ssl = ssl.release(),
+             .anti_dpi = config->anti_dpi,
++            .anti_dpi_mode = config->anti_dpi_mode,
++            .anti_dpi_desync = config->anti_dpi_desync,
+     };
+ 
+     VpnError error = tcp_socket_connect(m_socket.get(), &param);
+diff --git a/core/src/tunnel.cpp b/core/src/tunnel.cpp
+index 1834898f..11004471 100644
+--- a/core/src/tunnel.cpp
++++ b/core/src/tunnel.cpp
+@@ -996,6 +996,13 @@ static std::shared_ptr<ServerUpstream> select_upstream(
+     return static_cast<ssize_t>(processed);
+ }
+ 
++static int destination_port(const VpnConnection *conn) {
++    if (const SocketAddress *dst = std::get_if<SocketAddress>(&conn->addr.dst); dst != nullptr) {
++        return dst->port();
++    }
++    return std::get<NamePort>(conn->addr.dst).port;
++}
++
+ std::optional<VpnConnectAction> Tunnel::finalize_connect_action(ConnectRequestResult request_result) const {
+     VpnConnection *conn = vpn_connection_get_by_id(this->connections.by_client_id, request_result.id);
+     if (conn == nullptr) {
+@@ -1016,6 +1023,13 @@ std::optional<VpnConnectAction> Tunnel::finalize_connect_action(ConnectRequestRe
+ #endif
+     conn->uid = request_result.uid;
+ 
++    if (this->vpn->upstream_config.block_quic && conn->proto == IPPROTO_UDP
++            && !conn->flags.test(CONNF_PLAIN_DNS_CONNECTION) && destination_port(conn) == 443) {
++        log_conn(this, conn, dbg, "QUIC is blocked, rejecting");
++        conn->action = VPN_CA_REJECT;
++        return conn->action;
++    }
++
+     const DomainFilter *filter = &this->vpn->domain_filter;
+     if ((request_result.action.has_value() && request_result.action.value() != VPN_CA_DEFAULT)
+             || conn->flags.test(CONNF_PLAIN_DNS_CONNECTION)) {
+diff --git a/core/src/vpn_fsm.cpp b/core/src/vpn_fsm.cpp
+index ba91ee48..ebf2040c 100644
+--- a/core/src/vpn_fsm.cpp
++++ b/core/src/vpn_fsm.cpp
+@@ -1,3 +1,4 @@
++#include <array>
+ #include <algorithm>
+ 
+ #include "common/socket_address.h"
+@@ -114,6 +115,23 @@ FsmTransitionTable vpn_fsm::get_transition_table() {
+ 
+ static void postponement_window_timer_cb(evutil_socket_t, short, void *arg);
+ 
++// The least time before the next handshake after a failed ping. A ClientHello that got no answer looks
++// like a filter freezing the address; reports on the TSPU (2026) say every handshake to the frozen address
++// during the freeze keeps it frozen. A reset one (an SNI block) is retried at once upstream - several
++// ClientHellos milliseconds apart, itself one of the freeze triggers.
++static Millis handshake_pause(PingFailure failure) {
++    switch (failure) {
++    case PING_FAILURE_HELLO_NO_ANSWER:
++        return Millis{60 * 1000};
++    case PING_FAILURE_HELLO_RESET:
++        return Millis{5 * 1000};
++    case PING_FAILURE_CONNECT:
++    case PING_FAILURE_NONE:
++        break;
++    }
++    return Millis{0};
++}
++
+ static void initiate_recovery(Vpn *vpn) {
+     if (vpn->recovery.attempts >= vpn->upstream_config->recovery.attempts) {
+         log_vpn(vpn, dbg, "Maximum number of recovery attempts has been made");
+@@ -143,6 +161,10 @@ static void initiate_recovery(Vpn *vpn) {
+     if (vpn->recovery.time.between_attempts >= elapsed) {
+         time_to_next = vpn->recovery.time.between_attempts - elapsed;
+     }
++    if (Millis pause = handshake_pause(vpn->last_ping_failure); time_to_next < pause) {
++        log_vpn(vpn, info, "Ping failed ({}): next attempt in {}", ping_failure_name(vpn->last_ping_failure), pause);
++        time_to_next = pause;
++    }
+ 
+     log_vpn(vpn, dbg, "Time to next recovery: {}", time_to_next);
+ 
+@@ -181,11 +203,27 @@ static void pinger_handler(void *arg, const LocationsPingerResult *result) {
+     vpn->client.tcp_socket.reset();
+     vpn->client.quic_connector.reset();
+     bool failure_induces_location_unavailable = std::exchange(vpn->ping_failure_induces_location_unavailable, false);
++    vpn->last_ping_failure = result->ping_ms < 0 ? result->failure : PING_FAILURE_NONE;
+     if (result->ping_ms < 0) {
+-        VpnError error = failure_induces_location_unavailable
+-                ? VpnError{VPN_EC_LOCATION_UNAVAILABLE, "None of the endpoints were pinged successfully"}
+-                : VpnError{VPN_EC_ERROR, "Failed to ping location"};
++        // The failure class goes into the text as a stable `[failure=...]` tag for the apps: a ClientHello
++        // without an answer looks like a filter freezing the address, where retrying with other tricks
++        // only makes it worse.
++        static const auto TEXTS = [] {
++            std::array<std::array<std::string, PING_FAILURE_HELLO_NO_ANSWER + 1>, 2> texts;
++            for (uint8_t f = 0; f <= PING_FAILURE_HELLO_NO_ANSWER; ++f) {
++                const char *name = ping_failure_name(PingFailure(f));
++                texts[0][f] = fmt::format("Failed to ping location [failure={}]", name);
++                texts[1][f] = fmt::format("None of the endpoints were pinged successfully [failure={}]", name);
++            }
++            return texts;
++        }();
++        const std::string &text = TEXTS[failure_induces_location_unavailable][std::min<uint8_t>(result->failure, PING_FAILURE_HELLO_NO_ANSWER)];
++        VpnError error = failure_induces_location_unavailable ? VpnError{VPN_EC_LOCATION_UNAVAILABLE, text.c_str()}
++                                                              : VpnError{VPN_EC_ERROR, text.c_str()};
+         log_vpn(vpn, warn, "{}", error.text);
++        // The same moment the desktop apps read the tag off this log line.
++        VpnPingFailedEvent failed_event{ping_failure_name(result->failure)};
++        vpn->handler.func(vpn->handler.arg, VPN_EVENT_PING_FAILED, &failed_event);
+         vpn->fsm.perform_transition(vpn_fsm::CE_PING_FAIL, &error);
+         return;
+     }
+@@ -298,6 +336,8 @@ static void run_ping(void *ctx, void *) {
+             .rounds = 1,
+             .main_protocol = vpn->upstream_config->main_protocol,
+             .anti_dpi = vpn->upstream_config->anti_dpi,
++            .anti_dpi_mode = vpn->upstream_config->anti_dpi_mode,
++            .anti_dpi_desync = vpn->upstream_config->anti_dpi_desync,
+             .handoff = true,
+             .quic_max_idle_timeout_ms = quic_max_idle_timeout,
+             .quic_version = 0,
+@@ -373,9 +413,21 @@ static void retry_connect(void *ctx, void *) {
+ 
+     vpn->disconnect();
+ 
+-    vpn->submit([vpn] {
+-        vpn->fsm.perform_transition(CE_RETRY_CONNECT, nullptr);
+-    });
++    if (Millis pause = handshake_pause(vpn->last_ping_failure); pause.count() > 0) {
++        // Cancelled like a recovery (`recovery = {}`) on disconnect and shutdown.
++        log_vpn(vpn, info, "Ping failed ({}): next attempt in {}", ping_failure_name(vpn->last_ping_failure), pause);
++        vpn->recovery.task = event_loop::schedule(
++                vpn->ev_loop.get(),
++                [vpn]() {
++                    vpn->recovery.task.release();
++                    vpn->fsm.perform_transition(CE_RETRY_CONNECT, nullptr);
++                },
++                pause);
++    } else {
++        vpn->submit([vpn] {
++            vpn->fsm.perform_transition(CE_RETRY_CONNECT, nullptr);
++        });
++    }
+ 
+     log_vpn(vpn, trace, "Done");
+ }
+diff --git a/core/src/vpn_manager.cpp b/core/src/vpn_manager.cpp
+index 1412505e..f9d48b64 100644
+--- a/core/src/vpn_manager.cpp
++++ b/core/src/vpn_manager.cpp
+@@ -119,6 +119,10 @@ vpn_client::EndpointConnectionConfig Vpn::make_client_upstream_config() const {
+             .password = this->upstream_config->password,
+             .ip_availability = ip_availability,
+             .anti_dpi = this->upstream_config->anti_dpi,
++            .anti_dpi_mode = this->upstream_config->anti_dpi_mode,
++            .anti_dpi_desync = this->upstream_config->anti_dpi_desync,
++            .h2_padding_frames = this->upstream_config->h2_padding_frames,
++            .block_quic = this->upstream_config->block_quic,
+     };
+ }
+ 
+diff --git a/core/src/vpn_manager.h b/core/src/vpn_manager.h
+index acc16e9b..ac8a3b37 100644
+--- a/core/src/vpn_manager.h
++++ b/core/src/vpn_manager.h
+@@ -109,6 +109,9 @@ struct Vpn {
+ 
+     DeclPtr<LocationsPinger, &locations_pinger_destroy> pinger;
+     bool ping_failure_induces_location_unavailable = false;
++    /// Why the last location ping failed (`PING_FAILURE_NONE` after a success). After
++    /// `PING_FAILURE_HELLO_NO_ANSWER` the next handshake waits `FREEZE_PAUSE`, see `vpn_fsm.cpp`.
++    PingFailure last_ping_failure = PING_FAILURE_NONE;
+ 
+     vpn_manager::ClientConnectionState client_state = vpn_manager::CLIS_DISCONNECTED;
+     VpnClient client;
+diff --git a/core/test/test_tunnel.cpp b/core/test/test_tunnel.cpp
+index 498e7528..caffcddd 100644
+--- a/core/test/test_tunnel.cpp
++++ b/core/test/test_tunnel.cpp
+@@ -267,6 +267,33 @@ TEST_F(TunnelTest, LocalhostConnection) {
+     ASSERT_GT(bypass_upstream->connections.size(), 0);
+ }
+ 
++TEST_F(TunnelTest, BlockQuic) {
++    auto action_for = [this](int proto, const char *address) {
++        connection_protocol = proto;
++        dst = SocketAddress(address);
++        size_t client_id = vpn.listener_conn_id_generator.get();
++        raise_client_connection(client_id);
++        return tun.finalize_connect_action({client_id, VPN_CA_DEFAULT, "some", 1});
++    };
++
++    ASSERT_NE(action_for(IPPROTO_UDP, "1.1.1.2:443"), VPN_CA_REJECT);
++
++    vpn.upstream_config.block_quic = true;
++    size_t client_id = vpn.listener_conn_id_generator.get();
++    connection_protocol = IPPROTO_UDP;
++    dst = SocketAddress("1.1.1.2:443");
++    ASSERT_NO_FATAL_FAILURE(raise_client_connection(client_id));
++    std::optional<VpnConnectAction> action = tun.finalize_connect_action({client_id, VPN_CA_DEFAULT, "some", 1});
++    ASSERT_EQ(action, VPN_CA_REJECT);
++    tun.complete_connect_request(client_id, action);
++    run_event_loop_once();
++    ASSERT_EQ(client_listener->connections[client_id].result, CCR_REJECT);
++    ASSERT_EQ(redirect_upstream->connections.size(), 0);
++
++    ASSERT_NE(action_for(IPPROTO_TCP, "1.1.1.2:443"), VPN_CA_REJECT);
++    ASSERT_NE(action_for(IPPROTO_UDP, "1.1.1.2:8443"), VPN_CA_REJECT);
++}
++
+ class MigrationTest : public TunnelTest {
+ public:
+     uint64_t client_id = NON_ID;
+diff --git a/core/test/test_vpn_manager_fsm.cpp b/core/test/test_vpn_manager_fsm.cpp
+index 5486fbdb..e54126dd 100644
+--- a/core/test/test_vpn_manager_fsm.cpp
++++ b/core/test/test_vpn_manager_fsm.cpp
+@@ -255,6 +255,7 @@ static void vpn_handler(void *arg, VpnEvent what, void *data) {
+     case VPN_EVENT_TUNNEL_CONNECTION_STATS:
+     case VPN_EVENT_TUNNEL_CONNECTION_CLOSED:
+     case VPN_EVENT_CONNECTION_INFO:
++    case VPN_EVENT_PING_FAILED:
+         break;
+     }
+ }
+diff --git a/core/test/test_vpn_manager_fsm_recovery.cpp b/core/test/test_vpn_manager_fsm_recovery.cpp
+index 9154ee6f..f05f91a9 100644
+--- a/core/test/test_vpn_manager_fsm_recovery.cpp
++++ b/core/test/test_vpn_manager_fsm_recovery.cpp
+@@ -110,6 +110,7 @@ struct ConnectingVpnManagerTest : MockedTest {
+         case VPN_EVENT_TUNNEL_CONNECTION_STATS:
+         case VPN_EVENT_TUNNEL_CONNECTION_CLOSED:
+         case VPN_EVENT_CONNECTION_INFO:
++        case VPN_EVENT_PING_FAILED:
+             break;
+         case VPN_EVENT_STATE_CHANGED: {
+             auto *event = (VpnStateChangedEvent *) data;
+diff --git a/net/CMakeLists.txt b/net/CMakeLists.txt
+index 51afe1e9..1fac3c06 100644
+--- a/net/CMakeLists.txt
++++ b/net/CMakeLists.txt
+@@ -108,6 +108,7 @@ link_libraries(ja4)
+ 
+ add_unit_test(test_http_headers "${TEST_DIR}" "" FALSE FALSE)
+ add_unit_test(test_tls_parse "${TEST_DIR}" "" FALSE FALSE)
++add_unit_test(test_desync_plan "${TEST_DIR}" "${TEST_EXTRA_INCLUDES}" TRUE TRUE)
+ add_unit_test(test_ping_offline "${TEST_DIR}" "${TEST_EXTRA_INCLUDES}" TRUE TRUE)
+ add_live_test(test_ping "${TEST_DIR}" "${TEST_EXTRA_INCLUDES}" TRUE TRUE)
+ add_unit_test(test_quic_parse "${TEST_DIR}" "${TEST_EXTRA_INCLUDES}" TRUE TRUE)
+diff --git a/net/include/net/http_session.h b/net/include/net/http_session.h
+index c7f6388e..0addea11 100644
+--- a/net/include/net/http_session.h
++++ b/net/include/net/http_session.h
+@@ -70,6 +70,7 @@ typedef struct {
+     HttpSessionHandler handler; // session events handler
+     size_t stream_window_size;  // initial stream local window size
+     HttpVersion version;        // protocol version
++    uint16_t padding_frames;    // HTTP/2: the first this many DATA/HEADERS frames get 0-255 random padding bytes
+ } HttpSessionParams;
+ 
+ typedef struct {
+diff --git a/net/include/net/locations_pinger.h b/net/include/net/locations_pinger.h
+index c21ff115..db31691c 100644
+--- a/net/include/net/locations_pinger.h
++++ b/net/include/net/locations_pinger.h
+@@ -35,6 +35,8 @@ typedef struct {
+     VpnUpstreamProtocol main_protocol; // Application-level protocol override for VPN endpoint protocols.
+                                        // @see `VpnUpstreamConfig.main_protocol` for full description.
+     bool anti_dpi;                     // Enable anti-DPI measures.
++    uint8_t anti_dpi_mode;             // Anti-DPI technique, see `TcpSocketConnectParameters.anti_dpi_mode`.
++    DesyncPlan anti_dpi_desync;        // Custom anti-DPI split, see `TcpSocketConnectParameters.anti_dpi_desync`.
+     bool handoff;                      // For internal use. Applications should set this parameter to `false`.
+                                        // If `true`, pass the connection state with the ping result.
+     const VpnRelay *relay_parallel;    // Ping through this relay in parallel with normal pings.
+@@ -48,6 +50,7 @@ typedef struct {
+     const VpnEndpoint *endpoint; // selected endpoint
+     const VpnRelay *relay;       // non-null if the selected endpoint was pinged through a relay
+     bool is_quic;                // Whether the established connection is QUIC
++    PingFailure failure;         // why, if `ping_ms` is negative
+     void *conn_state;            // For internal use. Applications should ignore this field.
+                                  // If `handoff` is `true`, this is the connection state object.
+ } LocationsPingerResult;
+diff --git a/net/include/net/tcp_socket.h b/net/include/net/tcp_socket.h
+index f60b8143..3bbb3eac 100644
+--- a/net/include/net/tcp_socket.h
++++ b/net/include/net/tcp_socket.h
+@@ -60,11 +60,32 @@ typedef struct {
+     const SocketAddress *peer; // should be null if `tcp_socket_acquire_fd` was called before
+     SSL *ssl;                  // SSL context in case of the traffic needs to be encrypted
+     bool anti_dpi;             // Enable anti-DPI protection
++    uint8_t anti_dpi_mode;     // With `anti_dpi`, how the first TLS ClientHello goes out:
++                               // 0 - first byte, 25 ms pause, the rest (rate limiter);
++                               // 1 - OOB after byte 3, bytes 4-7 with TTL 1 (byedpi -o3 -d7);
++                               // 2 - first 7 bytes with TTL 1, resent by the kernel (byedpi -d7);
++                               // 3 - OOB after the first SNI byte, SNI bytes 2-3 with TTL 1 (byedpi -o1+s -d3+s).
++    DesyncPlan anti_dpi_desync; // With `anti_dpi`, a custom split instead of `anti_dpi_mode` if not empty
+     bool pause_tls;            // Pause the TLS handshake and raise `TCP_SOCKET_EVENT_CONNECTED` after receiving the
+                     // first bytes from server. Continue the handshake by calling `tcp_socket_connect_continue`.
+                     // `TCP_SOCKET_EVENT_CONNECTED` will be raised one more time when the handshake is complete.
+ } TcpSocketConnectParameters;
+ 
++/**
++ * Whether the first TLS flight (the ClientHello) has been written to the socket
++ */
++bool tcp_socket_hello_sent(const TcpSocket *socket);
++
++/**
++ * Parse a custom anti-DPI split in byedpi syntax (github.com/hufrea/byedpi), e.g. `-o1+s -d3+s`:
++ * space-separated parts `-s<n>` (plain TCP split), `-o<n>` (urgent data) and `-d<n>` (TTL 1), in order.
++ * `<n>` is where the part ends: from the record start, from its end if negative, or from the SNI
++ * host name with `+s` (`+h` is the same for TLS). Not accepted: `-r` (TLS record split, the
++ * server refuses it), an `-o` without a `-d` after it (stalls a tokio server, see `desync_write`).
++ * @return the plan, or nullopt with `error` set
++ */
++std::optional<DesyncPlan> desync_plan_parse(std::string_view text, std::string *error);
++
+ /**
+  * Create new socket
+  * @param parameters socket parameters
+diff --git a/net/include/net/utils.h b/net/include/net/utils.h
+index e4ade71f..7755af67 100644
+--- a/net/include/net/utils.h
++++ b/net/include/net/utils.h
+@@ -29,6 +29,46 @@ namespace ag {
+ // Needed to avoid passing nullptr to Rust FFI functions, which expect non-null pointers to construct slices.
+ #define RUST_EMPTY ((const uint8_t *) "")
+ 
++/// One cut of a custom anti-DPI split of the first TLS ClientHello, see `desync_plan_parse`.
++struct DesyncPart {
++    enum How : uint8_t { SPLIT, OOB, TTL1 } how; // plain TCP segment, urgent data, TTL/hop limit 1
++    bool from_sni;  // `offset` counts from the SNI host name, else from the record start (negative: from its end)
++    int16_t offset; // where this part ends
++};
++
++/// A custom anti-DPI split; empty means the built-in `anti_dpi_mode`. Trivial (it sits in
++/// `VpnUpstreamConfig`), so zero it with `{}`.
++struct DesyncPlan {
++    static constexpr size_t MAX_PARTS = 8;
++    uint8_t n_parts;
++    DesyncPart parts[MAX_PARTS];
++};
++
++/// Why the connections to an endpoint failed, as far as the client can tell; a larger value is more
++/// specific and wins when several connections failed differently.
++enum PingFailure : uint8_t {
++    PING_FAILURE_NONE,
++    PING_FAILURE_CONNECT,          // no TCP connection (refused, unreachable, timed out), or QUIC failed
++    PING_FAILURE_HELLO_RESET,      // TCP connected, the ClientHello went out, the connection was reset or closed
++    PING_FAILURE_HELLO_NO_ANSWER,  // TCP connected, the ClientHello went out, nothing came back in time:
++                                   // what a filter "freezing" the address looks like
++};
++
++/// Short stable name of a `PingFailure` for error texts and logs.
++constexpr const char *ping_failure_name(PingFailure failure) {
++    switch (failure) {
++    case PING_FAILURE_CONNECT:
++        return "connect";
++    case PING_FAILURE_HELLO_RESET:
++        return "hello_reset";
++    case PING_FAILURE_HELLO_NO_ANSWER:
++        return "hello_no_answer";
++    case PING_FAILURE_NONE:
++        break;
++    }
++    return "none";
++}
++
+ struct SocketProtectEvent {
+     evutil_socket_t fd;   // file descriptor
+     const sockaddr *peer; // destination address
+diff --git a/net/src/http2.cpp b/net/src/http2.cpp
+index d1d93eee..c9f1de0a 100644
+--- a/net/src/http2.cpp
++++ b/net/src/http2.cpp
+@@ -1,3 +1,4 @@
++#include <openssl/rand.h>
+ #include "http2.h"
+ 
+ #include <algorithm>
+@@ -405,6 +406,24 @@ static int error_callback(nghttp2_session *ngsession, const char *msg, size_t le
+     return r;
+ }
+ 
++// Random padding (the PADDED flag, RFC 9113 6.1) on the first frames of the session: the sizes of the
++// tunnel's first requests and data are what a filter can fingerprint, the TLS records only hide them
++// in part. Padding is part of the HTTP/2 protocol, any server must accept it.
++static ssize_t select_padding_callback(
++        nghttp2_session *, const nghttp2_frame *frame, size_t max_payloadlen, void *user_data) {
++    auto *session = (HttpSession *) user_data;
++    size_t length = frame->hd.length;
++    if (session->h2 == nullptr || session->h2->padded_frames >= session->params.padding_frames
++            || max_payloadlen <= length) {
++        return ssize_t(length);
++    }
++    ++session->h2->padded_frames;
++    uint8_t random = 0;
++    RAND_bytes(&random, 1);
++    // + 1 for the Pad Length field itself
++    return ssize_t(std::min(max_payloadlen, length + 1 + random));
++}
++
+ Http2Session *http2_session_init(HttpSession *ctx) {
+     Http2Session *session = nullptr;
+     nghttp2_session *ngsession;
+@@ -436,6 +455,9 @@ Http2Session *http2_session_init(HttpSession *ctx) {
+     nghttp2_session_callbacks_set_error_callback(ngcallbacks, error_callback);
+     // output callback
+     nghttp2_session_callbacks_set_send_callback(ngcallbacks, on_send_callback);
++    if (ctx->params.padding_frames > 0) {
++        nghttp2_session_callbacks_set_select_padding_callback(ngcallbacks, select_padding_callback);
++    }
+ 
+     // Session options
+     nghttp2_option_new(&ngoption);
+diff --git a/net/src/http2.h b/net/src/http2.h
+index 96a5a0d0..2368d195 100644
+--- a/net/src/http2.h
++++ b/net/src/http2.h
+@@ -21,6 +21,7 @@ KHASH_MAP_INIT_INT(h2_streams_ht, HttpStream *);
+ struct Http2Session {
+     nghttp2_session *ngsession;
+     khash_t(h2_streams_ht) * streams;
++    uint32_t padded_frames; // frames padded so far, see `HttpSessionParams.padding_frames`
+ };
+ 
+ } // namespace ag
+diff --git a/net/src/locations_pinger.cpp b/net/src/locations_pinger.cpp
+index d45c6a0a..a7c1bd05 100644
+--- a/net/src/locations_pinger.cpp
++++ b/net/src/locations_pinger.cpp
+@@ -62,6 +62,7 @@ struct LocationsCtx {
+     std::vector<PingedEndpoint> pinged_ipv4;
+     size_t ipv4_unavailable_errors_cnt = 0;
+     size_t ipv6_unavailable_errors_cnt = 0;
++    PingFailure failure = PING_FAILURE_NONE; // the most specific failure among the endpoints
+ };
+ 
+ struct LocationsPinger {
+@@ -78,6 +79,8 @@ struct LocationsPinger {
+     uint32_t rounds;
+     VpnUpstreamProtocol main_protocol;
+     bool anti_dpi;
++    uint8_t anti_dpi_mode;
++    DesyncPlan anti_dpi_desync{};
+     bool handoff;
+     AutoVpnRelay relay_parallel;
+     uint32_t quic_max_idle_timeout_ms;
+@@ -172,8 +175,10 @@ static void finalize_location(LocationsPinger *pinger, FinalizeLocationInfo info
+                 result.relay ? " through relay " : "", result.relay ? SocketAddress(result.relay->address).str() : "",
+                 result.ping_ms);
+     } else {
+-        log_location(pinger, location->info->id, dbg, "None of the endpoints has been pinged successfully");
++        log_location(pinger, location->info->id, dbg, "None of the endpoints has been pinged successfully ({})",
++                ping_failure_name(location->failure));
+         result.ping_ms = -1;
++        result.failure = location->failure;
+     }
+ 
+     LocationsPingerHandler handler = pinger->handler;
+@@ -235,9 +240,10 @@ static std::optional<FinalizeLocationInfo> process_ping_result(LocationsPinger *
+         }
+         [[fallthrough]];
+     case PING_TIMEDOUT:
+-        log_location(pinger, ping_get_id(result->ping), dbg, "Failed to ping endpoint {} ({}) - error code {}",
++        l->failure = std::max(l->failure, result->failure);
++        log_location(pinger, ping_get_id(result->ping), dbg, "Failed to ping endpoint {} ({}) - error code {}, {}",
+                 result->endpoint->name, SocketAddress(result->endpoint->address),
+-                magic_enum::enum_name(result->status));
++                magic_enum::enum_name(result->status), ping_failure_name(result->failure));
+         break;
+     }
+ 
+@@ -262,7 +268,7 @@ static void start_location_ping(LocationsPinger *pinger) {
+     PingInfo ping_info = {i->info->id, pinger->loop, pinger->network_manager,
+             {i->info->endpoints.data, i->info->endpoints.size}, pinger->timeout_ms,
+             {pinger->interfaces.data(), pinger->interfaces.size()}, pinger->rounds, pinger->main_protocol,
+-            pinger->anti_dpi, pinger->handoff, {i->info->relays.data, i->info->relays.size}, *pinger->relay_parallel,
++            pinger->anti_dpi, pinger->anti_dpi_mode, pinger->anti_dpi_desync, pinger->handoff, {i->info->relays.data, i->info->relays.size}, *pinger->relay_parallel,
+             pinger->quic_max_idle_timeout_ms, pinger->quic_version};
+     Ping *ping = ping_start(&ping_info, {ping_handler, pinger});
+ 
+@@ -312,6 +318,8 @@ LocationsPinger *locations_pinger_start(const LocationsPingerInfo *info, Locatio
+     pinger->rounds = info->rounds;
+     pinger->main_protocol = info->main_protocol;
+     pinger->anti_dpi = info->anti_dpi;
++    pinger->anti_dpi_mode = info->anti_dpi_mode;
++    pinger->anti_dpi_desync = info->anti_dpi_desync;
+     pinger->handoff = info->handoff;
+     pinger->quic_max_idle_timeout_ms = info->quic_max_idle_timeout_ms;
+     pinger->quic_version = info->quic_version;
+diff --git a/net/src/ping.cpp b/net/src/ping.cpp
+index e6b43c85..b4ff3bda 100644
+--- a/net/src/ping.cpp
++++ b/net/src/ping.cpp
+@@ -64,6 +64,7 @@ struct PingConn {
+     uint32_t bound_if = 0;
+     std::string bound_if_name;
+     int socket_error = 0;
++    PingFailure failure = PING_FAILURE_NONE; // why the last attempt failed
+     bool use_quic = false;
+     bool no_quic_fallback = false; // If true, don't try to connect via TCP if QUIC connection fails.
+     bool old_use_quic = false;
+@@ -112,6 +113,8 @@ struct Ping {
+     bool have_direct_result;
+     bool have_round_winner;
+     bool anti_dpi;
++    uint8_t anti_dpi_mode;
++    DesyncPlan anti_dpi_desync{};
+     VpnUpstreamProtocol main_protocol;
+     bool handoff;
+ 
+@@ -148,6 +151,10 @@ static void on_timer(evutil_socket_t, short, void *arg) {
+          }) {
+         pending.splice(pending.end(), inprogress);
+         for (PingConn &ep : pending) {
++            if (!self->have_round_winner) {
++                ep.failure = tcp_socket_hello_sent(ep.tcp_socket.get()) ? PING_FAILURE_HELLO_NO_ANSWER
++                                                                        : PING_FAILURE_CONNECT;
++            }
+             ep.tcp_socket.reset();
+             ep.quic_connector.reset();
+             ep.ssl.reset();
+@@ -248,6 +255,8 @@ static void do_connect(void *arg, bool shortcut) {
+                 .peer = &dest,
+                 .ssl = conn->ssl.get(),
+                 .anti_dpi = self->anti_dpi,
++                .anti_dpi_mode = self->anti_dpi_mode,
++                .anti_dpi_desync = self->anti_dpi_desync,
+                 .pause_tls = true,
+         };
+         error = tcp_socket_connect(conn->tcp_socket.get(), &parameters);
+@@ -336,6 +345,7 @@ static void do_report(void *arg) {
+             result.ms = int(pow(double(it->best_result_ms.value()), 0.85) * 1.8) + 1;
+         } else {
+             result.socket_error = it->socket_error;
++            result.failure = it->failure;
+             result.status = (it->socket_error == 0 || it->socket_error == ag::utils::AG_ETIMEDOUT) ? PING_TIMEDOUT
+                                                                                                    : PING_SOCKET_ERROR;
+             result.ms = -1;
+@@ -577,6 +587,8 @@ Ping *ping_start(const PingInfo *info, PingHandler handler) {
+     self->loop = info->loop;
+     self->handler = handler;
+     self->anti_dpi = info->anti_dpi;
++    self->anti_dpi_mode = info->anti_dpi_mode;
++    self->anti_dpi_desync = info->anti_dpi_desync;
+ #ifndef DISABLE_HTTP3
+     self->main_protocol = info->main_protocol;
+ #else
+@@ -802,6 +814,7 @@ void conn_process_result(PingConn *conn, VpnError *error) {
+     if (error) {
+         log_conn(ping, conn, dbg, "Failed to get a response: ({}) {}", error->code, error->text);
+         conn->socket_error = error->code;
++        conn->failure = tcp_socket_hello_sent(conn->tcp_socket.get()) ? PING_FAILURE_HELLO_RESET : PING_FAILURE_CONNECT;
+         conn->tcp_socket.reset();
+         conn->quic_connector.reset();
+     } else {
+diff --git a/net/src/ping.h b/net/src/ping.h
+index 57524089..ad5206cb 100644
+--- a/net/src/ping.h
++++ b/net/src/ping.h
+@@ -27,6 +27,7 @@ struct PingResult {
+     const VpnRelay *relay;       // non-null if the endpoint was pinged through a relay
+     bool is_quic;                // Whether the established connection is QUIC
+     void *conn_state;            // Connection object, non-NULL if connection hand-off is enabled
++    PingFailure failure;         // why, if `status` is `PING_SOCKET_ERROR` or `PING_TIMEDOUT`
+ };
+ 
+ struct PingInfo {
+@@ -54,6 +55,8 @@ struct PingInfo {
+      */
+     VpnUpstreamProtocol main_protocol;
+     bool anti_dpi = false; ///< Enable anti-DPI measures
++    uint8_t anti_dpi_mode = 0; ///< Anti-DPI technique, see `TcpSocketConnectParameters.anti_dpi_mode`
++    DesyncPlan anti_dpi_desync{}; ///< Custom anti-DPI split, see `TcpSocketConnectParameters.anti_dpi_desync`
+     bool handoff = false;  ///< Enable connection hand-off.
+ 
+     /// The list of relay addresses to try if an endpoint is unresponsive on its normal address.
+diff --git a/net/src/tcp_socket.cpp b/net/src/tcp_socket.cpp
+index fc40de51..d05f5f95 100644
+--- a/net/src/tcp_socket.cpp
++++ b/net/src/tcp_socket.cpp
+@@ -1,12 +1,23 @@
+ // Must precede openssl includes to avoid conflicts on Windows
+ #include "vpn/platform.h"
+ 
++#include <algorithm>
+ #include <atomic>
++#include <chrono>
+ #include <cassert>
+ #include <cstddef>
+ #include <cstring>
++#include <iterator>
+ #include <list>
++#include <optional>
++#include <thread>
+ #include <variant>
++
++#ifdef __linux__
++#include <linux/sockios.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++#endif
+ #include <vector>
+ 
+ #include <event2/buffer.h>
+@@ -87,9 +98,15 @@ struct TcpSocket {
+     std::optional<int> subscribe_id;
+     std::string_view alpn;
+     int kex_group_nid = NID_undef; // NID of group function used for key exchange
++    uint8_t desync_mode = 0;     // `TcpSocketConnectParameters.anti_dpi_mode` if it applies to this socket
++    DesyncPlan desync_plan{};    // what `desync_write` does: `anti_dpi_desync`, or the plan of `desync_mode`
++    bool hello_sent = false;     // the first TLS flight has been written
+ };
+ 
+ extern "C" bool socket_manager_complete_write(SocketManager *manager, struct bufferevent *bev);
++
++static constexpr uint8_t DESYNC_CUSTOM = 0xff; // `desync_mode` when `anti_dpi_desync` is used
++static DesyncPlan desync_plan_for(const DesyncPlan &custom, uint8_t mode);
+ static void on_read(struct bufferevent *, void *);
+ static void on_write_flush(struct bufferevent *, TcpSocket *ctx);
+ static void on_event(struct bufferevent *, short, void *);
+@@ -619,7 +636,15 @@ VpnError tcp_socket_connect(TcpSocket *socket, const TcpSocketConnectParameters
+         addr = SocketAddress(*param->peer);
+         snprintf(socket->log_id, sizeof(socket->log_id), LOG_ID_PREADDR_FMT "%s", socket->id, addr.str().c_str());
+ 
+-        socket->bev = create_bufferevent(socket, addr, (param->ssl && param->anti_dpi));
++        // Mode 0 is the upstream rate limiter; the other modes rewrite the
++        // first TLS flight in `desync_write` instead.
++        bool desync = param->ssl && param->anti_dpi
++                && (param->anti_dpi_mode != 0 || param->anti_dpi_desync.n_parts != 0);
++        socket->bev = create_bufferevent(socket, addr, (param->ssl && param->anti_dpi && !desync));
++        if (desync) {
++            socket->desync_mode = param->anti_dpi_desync.n_parts != 0 ? DESYNC_CUSTOM : param->anti_dpi_mode;
++            socket->desync_plan = desync_plan_for(param->anti_dpi_desync, param->anti_dpi_mode);
++        }
+         if (socket->bev == nullptr) {
+             goto fail;
+         }
+@@ -1149,6 +1174,311 @@ done:
+ 
+ #endif // _WIN32
+ 
++// Anti-DPI techniques for the first TLS ClientHello, after byedpi
++// (github.com/hufrea/byedpi, MIT, Copyright (c) 2024 hufrea): the ClientHello
++// stays one TLS record - the server's TLS stack never sees a difference - but
++// a middlebox reading the TCP stream gets it cut up or out of order.
++//  - OOB: `send(MSG_OOB)` of a prefix plus one junk byte; the junk byte is
++//    urgent data, which the receiving kernel takes out of the stream.
++//  - TTL 1: a prefix goes out with TTL/hop limit 1 and dies on the first
++//    hop; the kernel retransmits it later with the normal TTL, so the
++//    middlebox sees the rest of the stream first.
++
++// Offset of the SNI host name in a TLS record carrying a ClientHello.
++static std::optional<size_t> clienthello_sni_offset(const uint8_t *data, size_t len) {
++    auto u16 = [&](size_t at) {
++        return static_cast<size_t>((data[at] << 8) | data[at + 1]);
++    };
++    // record header (5) + handshake header (4) + version (2) + random (32)
++    size_t pos = 5 + 4 + 2 + 32;
++    if (len < pos + 1 || data[0] != 0x16 || data[5] != 0x01) {
++        return std::nullopt;
++    }
++    pos += 1 + data[pos]; // session id
++    if (len < pos + 2) {
++        return std::nullopt;
++    }
++    pos += 2 + u16(pos); // cipher suites
++    if (len < pos + 1) {
++        return std::nullopt;
++    }
++    pos += 1 + data[pos]; // compression methods
++    if (len < pos + 2) {
++        return std::nullopt;
++    }
++    size_t end = std::min(len, pos + 2 + u16(pos));
++    pos += 2;
++    while (pos + 4 <= end) {
++        size_t type = u16(pos);
++        size_t ext_len = u16(pos + 2);
++        pos += 4;
++        // server_name: list length (2), name type (1), name length (2), name
++        if (type == 0 && pos + 5 <= end && data[pos + 2] == 0) {
++            return pos + 5;
++        }
++        pos += ext_len;
++    }
++    return std::nullopt;
++}
++
++static int desync_get_ttl(evutil_socket_t fd, bool v6, int *ttl) {
++    socklen_t size = sizeof(*ttl);
++    return v6 ? getsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (char *) ttl, &size)
++              : getsockopt(fd, IPPROTO_IP, IP_TTL, (char *) ttl, &size);
++}
++
++static int desync_set_ttl(evutil_socket_t fd, bool v6, int ttl) {
++    return v6 ? setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (const char *) &ttl, sizeof(ttl))
++              : setsockopt(fd, IPPROTO_IP, IP_TTL, (const char *) &ttl, sizeof(ttl));
++}
++
++// Bytes the kernel hasn't sent yet, or -1 if it won't say. Android's
++// SELinux denies apps the SIOCOUTQNSD ioctl; TCP_INFO works there.
++static int desync_unsent(evutil_socket_t fd) {
++#ifdef __linux__
++    int unsent = 0;
++    if (ioctl(fd, SIOCOUTQNSD, &unsent) == 0) {
++        return unsent;
++    }
++#ifdef __ANDROID__
++    tcp_info info{};
++    socklen_t size = sizeof(info);
++    if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &size) == 0
++            && static_cast<size_t>(size) >= offsetof(tcp_info, tcpi_notsent_bytes) + sizeof(info.tcpi_notsent_bytes)) {
++        return static_cast<int>(info.tcpi_notsent_bytes);
++    }
++#endif
++#else
++    (void) fd;
++#endif
++    return -1;
++}
++
++// Waits (at most ~20 ms) until the kernel has sent what was queued, so that
++// restoring the TTL doesn't catch the TTL-1 part still in the queue: the
++// TTL is read when a packet actually goes out, and the kernel may hold a
++// small segment back while the previous one is still in the driver (TCP
++// small queues - seen on a Galaxy S22).
++static void desync_wait_sent(evutil_socket_t fd) {
++    for (int i = 0; i < 20; ++i) {
++        int unsent = desync_unsent(fd);
++        if (unsent == 0) {
++            return;
++        }
++        if (unsent < 0) {
++            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // can't tell: give it time
++            return;
++        }
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    }
++}
++
++// Waits (at most ~500 ms) until the peer has acknowledged everything sent,
++// before the next part: then nothing is in flight or queued, and the next
++// part leaves as its own packet at once - with a TTL-1 part right behind
++// an OOB one, the kernel held it back until after the TTL was restored
++// (Galaxy S22). The same wait as sing-box's TLS fragment (TCP_INFO unacked).
++static void desync_wait_acked(evutil_socket_t fd) {
++#ifdef __linux__
++    for (int i = 0; i < 500; ++i) {
++        tcp_info info{};
++        socklen_t size = sizeof(info);
++        if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &size) != 0 || info.tcpi_unacked == 0) {
++            return;
++        }
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    }
++#else
++    (void) fd;
++    std::this_thread::sleep_for(std::chrono::milliseconds(50));
++#endif
++}
++
++static DesyncPlan desync_plan_for(const DesyncPlan &custom, uint8_t mode) {
++    if (custom.n_parts != 0) {
++        return custom;
++    }
++    // Mode 1: OOB alone (byedpi -o1) hangs a tokio server such as TrustTunnel's:
++    // its read stops at the urgent mark, the short read makes tokio treat the
++    // socket as drained, and the rest of the ClientHello, already queued, never
++    // wakes it. The TTL-1 part is retransmitted later, and that arrival does.
++    static const char *const BUILT_IN[] = {nullptr, "-o3 -d7", "-d7", "-o1+s -d3+s"};
++    DesyncPlan plan{};
++    if (mode < std::size(BUILT_IN) && BUILT_IN[mode] != nullptr) {
++        plan = *desync_plan_parse(BUILT_IN[mode], nullptr);
++    }
++    return plan;
++}
++
++bool tcp_socket_hello_sent(const TcpSocket *socket) {
++    return socket != nullptr && socket->hello_sent;
++}
++
++std::optional<DesyncPlan> desync_plan_parse(std::string_view text, std::string *error) {
++    auto fail = [error](std::string message) -> std::optional<DesyncPlan> {
++        if (error != nullptr) {
++            *error = std::move(message);
++        }
++        return std::nullopt;
++    };
++    DesyncPlan plan{};
++    bool oob_pending = false; // an `-o` with no `-d` after it yet
++    size_t pos = 0;
++    while (pos < text.size()) {
++        if (text[pos] == ' ' || text[pos] == '\t') {
++            ++pos;
++            continue;
++        }
++        size_t end = text.find_first_of(" \t", pos);
++        std::string_view token = text.substr(pos, end == std::string_view::npos ? std::string_view::npos : end - pos);
++        pos += token.size();
++
++        if (token.size() < 3 || token[0] != '-') {
++            return fail(fmt::format("\"{}\": expected -s, -o or -d with a position", token));
++        }
++        DesyncPart part{};
++        switch (token[1]) {
++        case 's':
++            part.how = DesyncPart::SPLIT;
++            break;
++        case 'o':
++            part.how = DesyncPart::OOB;
++            break;
++        case 'd':
++            part.how = DesyncPart::TTL1;
++            break;
++        case 'r':
++            return fail(fmt::format("\"{}\": TLS record split is not supported by the server", token));
++        default:
++            return fail(fmt::format("\"{}\": unknown option, only -s, -o and -d", token));
++        }
++        std::string_view rest = token.substr(2);
++        bool negative = !rest.empty() && rest[0] == '-';
++        if (negative) {
++            rest.remove_prefix(1);
++        }
++        int value = 0;
++        size_t digits = 0;
++        while (digits < rest.size() && rest[digits] >= '0' && rest[digits] <= '9' && value <= 9999) {
++            value = value * 10 + (rest[digits++] - '0');
++        }
++        if (digits == 0 || value > 1500) {
++            return fail(fmt::format("\"{}\": position must be a number from -1500 to 1500", token));
++        }
++        rest.remove_prefix(digits);
++        if (rest == "+s" || rest == "+h") {
++            part.from_sni = true;
++        } else if (!rest.empty()) {
++            return fail(fmt::format("\"{}\": only +s or +h may follow the position", token));
++        }
++        part.offset = static_cast<int16_t>(negative ? -value : value);
++        if (plan.n_parts == DesyncPlan::MAX_PARTS) {
++            return fail(fmt::format("at most {} parts", DesyncPlan::MAX_PARTS));
++        }
++        plan.parts[plan.n_parts++] = part;
++        if (part.how == DesyncPart::OOB) {
++            oob_pending = true;
++        } else if (part.how == DesyncPart::TTL1) {
++            oob_pending = false;
++        }
++    }
++    if (oob_pending) {
++        return fail("every -o needs a -d after it, or the server stalls");
++    }
++    return plan;
++}
++
++static VpnError desync_write(TcpSocket *socket, uint8_t *data, size_t len) {
++    evutil_socket_t fd = bufferevent_getfd(socket->bev);
++    if (fd < 0 || evbuffer_get_length(bufferevent_get_output(socket->bev)) != 0) {
++        return tcp_socket_write(socket, data, len);
++    }
++
++    // Where each part ends in this record. Parts that don't fall strictly
++    // inside the record after the previous one are dropped; without an SNI
++    // the plan falls back to mode 1, which needs none.
++    struct Cut {
++        DesyncPart::How how;
++        size_t end;
++    };
++    Cut cuts[DesyncPlan::MAX_PARTS];
++    size_t n_cuts = 0;
++    std::optional<size_t> sni = clienthello_sni_offset(data, len);
++    const DesyncPlan &plan = std::any_of(socket->desync_plan.parts,
++                                     socket->desync_plan.parts + socket->desync_plan.n_parts,
++                                     [](const DesyncPart &p) {
++                                         return p.from_sni;
++                                     })
++                    && !sni.has_value()
++            ? desync_plan_for({}, 1)
++            : socket->desync_plan;
++    for (size_t i = 0; i < plan.n_parts; ++i) {
++        const DesyncPart &part = plan.parts[i];
++        ptrdiff_t base = part.from_sni ? static_cast<ptrdiff_t>(*sni) : (part.offset < 0 ? static_cast<ptrdiff_t>(len) : 0);
++        ptrdiff_t end = base + part.offset;
++        size_t prev = n_cuts > 0 ? cuts[n_cuts - 1].end : 0;
++        if (end <= static_cast<ptrdiff_t>(prev) || end >= static_cast<ptrdiff_t>(len)) {
++            continue;
++        }
++        cuts[n_cuts++] = {part.how, static_cast<size_t>(end)};
++    }
++    // An OOB part left without a TTL-1 one after it (its pair was dropped
++    // above) would stall the server; it goes out as a plain split instead.
++    bool ttl1_after = false;
++    for (size_t i = n_cuts; i-- > 0;) {
++        if (cuts[i].how == DesyncPart::TTL1) {
++            ttl1_after = true;
++        } else if (cuts[i].how == DesyncPart::OOB && !ttl1_after) {
++            cuts[i].how = DesyncPart::SPLIT;
++        }
++    }
++
++    sockaddr_storage local{};
++    socklen_t local_len = sizeof(local);
++    bool v6 = getsockname(fd, (sockaddr *) &local, &local_len) == 0 && local.ss_family == AF_INET6;
++
++    size_t pos = 0;
++    for (size_t i = 0; i < n_cuts; ++i) {
++        const Cut &cut = cuts[i];
++        size_t chunk = cut.end - pos;
++        if (i > 0) {
++            desync_wait_acked(fd);
++        }
++        ptrdiff_t sent;
++        if (cut.how == DesyncPart::OOB) {
++            uint8_t saved = data[cut.end];
++            data[cut.end] = 'a';
++            sent = send(fd, (const char *) data + pos, static_cast<int>(chunk + 1), MSG_OOB);
++            data[cut.end] = saved;
++            sent = (sent == static_cast<ptrdiff_t>(chunk + 1)) ? static_cast<ptrdiff_t>(chunk) : -1;
++        } else if (cut.how == DesyncPart::TTL1) {
++            int ttl = 0;
++            if (desync_get_ttl(fd, v6, &ttl) != 0 || desync_set_ttl(fd, v6, 1) != 0) {
++                int err = evutil_socket_geterror(fd);
++                log_sock(socket, warn, "Anti-DPI mode {}: no TTL control: {} ({})", socket->desync_mode,
++                        evutil_socket_error_to_string(err), err);
++                break; // the rest goes out as is
++            }
++            sent = send(fd, (const char *) data + pos, static_cast<int>(chunk), 0);
++            desync_wait_sent(fd);
++            desync_set_ttl(fd, v6, ttl);
++        } else {
++            sent = send(fd, (const char *) data + pos, static_cast<int>(chunk), 0);
++        }
++        if (sent != static_cast<ptrdiff_t>(chunk)) {
++            int err = evutil_socket_geterror(fd);
++            log_sock(socket, dbg, "Anti-DPI mode {}: send failed: {} ({})", socket->desync_mode,
++                    evutil_socket_error_to_string(err), err);
++            return {err ? err : -1, "Anti-DPI send failed"};
++        }
++        pos = cut.end;
++    }
++    log_sock(socket, dbg, "Anti-DPI mode {}: ClientHello of {} bytes, {} sent split in {} parts", socket->desync_mode,
++            len, pos, n_cuts);
++
++    return (pos < len) ? tcp_socket_write(socket, data + pos, len - pos) : VpnError{};
++}
++
+ VpnError do_handshake(TcpSocket *socket) {
+     auto err_log_wrapper = [socket](const int code, const char *text) -> VpnError {
+         if (code != 0) {
+@@ -1222,7 +1552,9 @@ VpnError do_handshake(TcpSocket *socket) {
+         if (ret == 0) {
+             break;
+         }
+-        VpnError e = tcp_socket_write(socket, buf, ret);
++        VpnError e = (socket->desync_mode != 0 && !socket->hello_sent) ? desync_write(socket, buf, ret)
++                                                                        : tcp_socket_write(socket, buf, ret);
++        socket->hello_sent = true;
+         if (e.code != 0) {
+             return err_log_wrapper(e.code, e.text);
+         }
+diff --git a/net/test/mock_ping_sockets.h b/net/test/mock_ping_sockets.h
+index 2c488f29..89336ee2 100644
+--- a/net/test/mock_ping_sockets.h
++++ b/net/test/mock_ping_sockets.h
+@@ -124,6 +124,11 @@ void tcp_socket_destroy(TcpSocket *socket) {
+ void tcp_socket_set_rst(TcpSocket *, bool) {
+ }
+ 
++// The mock never reaches the TLS stage.
++bool tcp_socket_hello_sent(const TcpSocket *) {
++    return false;
++}
++
+ struct MockTcpConnectedTask {
+     std::weak_ptr<bool> alive;
+     TcpSocketHandler handler;
+diff --git a/net/test/test_desync_plan.cpp b/net/test/test_desync_plan.cpp
+new file mode 100644
+index 00000000..8f877133
+--- /dev/null
++++ b/net/test/test_desync_plan.cpp
+@@ -0,0 +1,40 @@
++#include <gtest/gtest.h>
++
++#include "net/tcp_socket.h"
++
++using namespace ag;
++
++TEST(DesyncPlan, ParsesByedpiParts) {
++    std::string error;
++    std::optional plan = desync_plan_parse("  -o1+s -d3+h\t-s-5 ", &error);
++    ASSERT_TRUE(plan.has_value()) << error;
++    ASSERT_EQ(plan->n_parts, 3);
++    EXPECT_EQ(plan->parts[0].how, DesyncPart::OOB);
++    EXPECT_TRUE(plan->parts[0].from_sni);
++    EXPECT_EQ(plan->parts[0].offset, 1);
++    EXPECT_EQ(plan->parts[1].how, DesyncPart::TTL1);
++    EXPECT_TRUE(plan->parts[1].from_sni);
++    EXPECT_EQ(plan->parts[2].how, DesyncPart::SPLIT);
++    EXPECT_FALSE(plan->parts[2].from_sni);
++    EXPECT_EQ(plan->parts[2].offset, -5);
++}
++
++TEST(DesyncPlan, EmptyIsEmpty) {
++    std::optional plan = desync_plan_parse("   ", nullptr);
++    ASSERT_TRUE(plan.has_value());
++    EXPECT_EQ(plan->n_parts, 0);
++}
++
++TEST(DesyncPlan, Rejects) {
++    for (const char *text : {"-r1+s", "-o3", "-o3 -s7", "-d", "-x3", "-d3+e", "-d1501", "d3", "-d3 -d4 -d5 -d6 -d7 -d8 -d9 -d10 -d11"}) {
++        std::string error;
++        EXPECT_FALSE(desync_plan_parse(text, &error).has_value()) << text;
++        EXPECT_FALSE(error.empty()) << text;
++    }
++}
++
++TEST(DesyncPlan, OobNeedsTtl1After) {
++    EXPECT_TRUE(desync_plan_parse("-o3 -d7", nullptr).has_value());
++    EXPECT_TRUE(desync_plan_parse("-o1 -s2 -d7 -s9", nullptr).has_value());
++    EXPECT_FALSE(desync_plan_parse("-d2 -o5", nullptr).has_value());
++}
+diff --git a/platform/android/lib/src/main/cpp/lib.cpp b/platform/android/lib/src/main/cpp/lib.cpp
+index b06e1bf4..1d51284d 100644
+--- a/platform/android/lib/src/main/cpp/lib.cpp
++++ b/platform/android/lib/src/main/cpp/lib.cpp
+@@ -96,6 +96,24 @@ private:
+         env->CallVoidMethod(m_callback_object.get(), m_state_changed_callback, (int) event->state);
+     }
+ 
++    // CatTunnel: why an attempt to reach the server failed (VPN_EVENT_PING_FAILED - on every attempt, also while
++    // connecting, where the state doesn't change), sent through the connection info callback as
++    // `{"cattunnel_failure":"..."}` - the Kotlin side has no other string callback. The app's plugin takes these
++    // records out of the query log.
++    void onPingFailed(ag::VpnPingFailedEvent *event) {
++        if (event->failure == nullptr || !m_connection_info_callback || !m_callback_object) {
++            return;
++        }
++        std::string_view name = event->failure;
++        if (name.empty() || name.find_first_not_of("abcdefghijklmnopqrstuvwxyz_") != std::string_view::npos) {
++            return;
++        }
++        ScopedJniEnv env{m_vm, 1};
++        std::string json = fmt::format(R"({{"cattunnel_failure":"{}"}})", name);
++        LocalRef<jstring> str(env.get(), env->NewStringUTF(json.c_str()));
++        env->CallVoidMethod(m_callback_object.get(), m_connection_info_callback, str.get());
++    }
++
+     void onConnectionInfo(ag::VpnConnectionInfoEvent *info) {
+         if (!this->m_connection_info_callback || !m_callback_object) {
+             errlog(g_logger, "`onConnectionInfo` called but there is no handler provided on Java side");
+@@ -126,6 +144,10 @@ private:
+                         [this](auto event) {
+                             onConnectionInfo(event);
+                         },
++                .ping_failed_handler =
++                        [this](auto event) {
++                            onPingFailed(event);
++                        },
+         };
+     }
+ };
+diff --git a/trusttunnel/include/vpn/trusttunnel/client.h b/trusttunnel/include/vpn/trusttunnel/client.h
+index 9306dd6b..c8303810 100644
+--- a/trusttunnel/include/vpn/trusttunnel/client.h
++++ b/trusttunnel/include/vpn/trusttunnel/client.h
+@@ -27,6 +27,7 @@ struct VpnCallbacks {
+     std::function<void(VpnStateChangedEvent *)> state_changed_handler;
+     std::function<void(VpnClientOutputEvent *)> client_output_handler;
+     std::function<void(VpnConnectionInfoEvent *)> connection_info_handler;
++    std::function<void(VpnPingFailedEvent *)> ping_failed_handler; // CatTunnel, optional
+ };
+ 
+ class TrustTunnelClient {
+diff --git a/trusttunnel/include/vpn/trusttunnel/config.h b/trusttunnel/include/vpn/trusttunnel/config.h
+index 0fc8d4ea..889277d9 100644
+--- a/trusttunnel/include/vpn/trusttunnel/config.h
++++ b/trusttunnel/include/vpn/trusttunnel/config.h
+@@ -32,6 +32,15 @@ struct TrustTunnelConfig {
+         std::optional<std::vector<std::string>> dns_upstreams;
+         bool skip_verification = false;
+         bool anti_dpi = false;
++        /// With anti_dpi: 0 - first byte, pause, the rest (upstream default);
++        /// 1 - OOB after byte 3, bytes 4-7 with TTL 1; 2 - first 7 bytes with TTL 1; 3 - OOB and TTL 1 inside the SNI.
++        int anti_dpi_mode = 0;
++        /// With anti_dpi: a custom split in byedpi syntax (`anti_dpi_desync = "-o1+s -d3+s"`), overrides the mode.
++        DesyncPlan anti_dpi_desync{};
++        /// HTTP/2: random padding on the first this many frames of a session (`h2_padding_frames`, 0..64).
++        int h2_padding_frames = 0;
++        /// Refuse UDP to port 443 (QUIC) so browsers fall back to TCP inside the tunnel (`block_quic`).
++        bool block_quic = false;
+         bool has_ipv6 = false;
+     };
+ 
+diff --git a/trusttunnel/src/client.cpp b/trusttunnel/src/client.cpp
+index b0c89eb7..5e399a8c 100644
+--- a/trusttunnel/src/client.cpp
++++ b/trusttunnel/src/client.cpp
+@@ -293,6 +293,10 @@ Error<TrustTunnelClient::ConnectResultError> TrustTunnelClient::connect_to_serve
+                                             .attempts = UINT32_MAX,
+                                     },
+                             .anti_dpi = m_config.location.anti_dpi,
++                            .anti_dpi_mode = static_cast<uint8_t>(m_config.location.anti_dpi_mode),
++                            .anti_dpi_desync = m_config.location.anti_dpi_desync,
++                            .h2_padding_frames = static_cast<uint16_t>(m_config.location.h2_padding_frames),
++                            .block_quic = m_config.location.block_quic,
+                     },
+     };
+ 
+@@ -533,13 +537,19 @@ void TrustTunnelClient::vpn_handler(void *, VpnEvent what, void *data) {
+                 });
+         break;
+     }
+-    case VPN_EVENT_CONNECTION_INFO:
++    case VPN_EVENT_CONNECTION_INFO: {
+         auto *info = (VpnConnectionInfoEvent *) data;
+         if (m_callbacks.connection_info_handler) {
+             m_callbacks.connection_info_handler(info);
+         }
+         break;
+     }
++    case VPN_EVENT_PING_FAILED:
++        if (m_callbacks.ping_failed_handler) {
++            m_callbacks.ping_failed_handler((VpnPingFailedEvent *) data);
++        }
++        break;
++    }
+ } // NOLINT(clang-analyzer-cplusplus.NewDeleteLeaks)
+ 
+ } // namespace ag
+diff --git a/trusttunnel/src/config.cpp b/trusttunnel/src/config.cpp
+index 03561485..eae27f29 100644
+--- a/trusttunnel/src/config.cpp
++++ b/trusttunnel/src/config.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include <common/logger.h>
+ #include <cstdio>
+ #include <functional>
+@@ -12,6 +13,7 @@
+ #include <openssl/err.h>
+ #include <openssl/pem.h>
+ 
++#include "net/tcp_socket.h"
+ #include "net/tls.h"
+ #include "utils.h"
+ #include "vpn/trusttunnel/config.h"
+@@ -130,6 +132,18 @@ static std::optional<TrustTunnelConfig::Location> build_endpoint(const toml::tab
+     }
+     location.skip_verification = config["skip_verification"].value_or(false);
+     location.anti_dpi = config["anti_dpi"].value_or(false);
++    location.anti_dpi_mode = std::clamp(config["anti_dpi_mode"].value_or(0), 0, 3);
++    location.h2_padding_frames = std::clamp(config["h2_padding_frames"].value_or(0), 0, 64);
++    location.block_quic = config["block_quic"].value_or(false);
++    if (auto desync = config["anti_dpi_desync"].value<std::string_view>(); desync && !desync->empty()) {
++        std::string error;
++        if (std::optional plan = desync_plan_parse(*desync, &error)) {
++            location.anti_dpi_desync = *plan;
++        } else {
++            errlog(g_logger, "Invalid endpoint anti_dpi_desync \"{}\": {}", *desync, error);
++            return std::nullopt;
++        }
++    }
+     location.has_ipv6 = config["has_ipv6"].value_or(true);
+     if (std::optional x = config["certificate"].value<std::string>();
+             !location.skip_verification && x.has_value() && !x->empty()) {

@@ -1,0 +1,4 @@
+/build/
+# private half of the release key - never in git
+keys/update-signing.pem
+keys/*.key

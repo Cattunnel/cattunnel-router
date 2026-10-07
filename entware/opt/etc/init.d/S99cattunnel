@@ -1,0 +1,12 @@
+#!/bin/sh
+# Entware (Keenetic, ASUS Merlin): автозапуск CatTunnel. Сам перезапускает движок при сбое.
+ENABLED=yes
+# Выключенный автозапуск — файл в /opt/etc/cattunnel (переустановка пакета его не трогает)
+[ ! -f /opt/etc/cattunnel/autostart.off ] || ENABLED=no
+case "$1" in
+	start)   [ "$ENABLED" = yes ] && [ -s /opt/etc/cattunnel/servers.bundle ] && /opt/bin/cattunnel start ;;
+	stop)    /opt/bin/cattunnel stop ;;
+	restart) /opt/bin/cattunnel restart ;;
+	status|check) /opt/bin/cattunnel status ;;
+	*) echo "Usage: $0 {start|stop|restart|status}" ;;
+esac

@@ -1,0 +1,78 @@
+#!/bin/sh
+# CatTunnel: API веб-страницы (Keenetic/Merlin, lighttpd с паролем). GET — состояние, серверы,
+# устройства; POST — изменения, только с заголовком X-CatTunnel: 1 (чужая страница в браузере
+# так не сможет — нужен CORS-preflight, а сервер его не разрешает). Значения проверяет сам cattunnel.
+CT=/opt/bin/cattunnel; [ -x "$CT" ] || CT=/usr/bin/cattunnel   # Keenetic/Merlin или OpenWrt
+INIT=/opt/etc/init.d/S99cattunnel
+PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin; export PATH   # lighttpd даёт CGI пустое окружение
+
+hdr() { printf 'Content-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n'; [ -n "${1:-}" ] && printf 'Status: %s\r\n' "$1"; printf '\r\n'; }
+jstr() {  # строка -> JSON-строка (sed: в busybox awk «\\» в gsub-замене ведёт себя иначе)
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/ /g; s/\r//g' | awk 'BEGIN { ORS = "" } { if (NR > 1) print "\\n"; print }' | sed 's/^/"/; s/$/"/'
+	[ -n "$1" ] || printf '""'
+}
+reply() { hdr; printf '{"ok":%s,"out":%s}\n' "$1" "$(jstr "$2")"; exit 0; }
+
+if [ "${REQUEST_METHOD:-GET}" = GET ]; then
+	hdr
+	st=$($CT json status 2>/dev/null); sv=$($CT json servers 2>/dev/null); ls=$($CT json leases 2>/dev/null)
+	printf '{"status":%s,"servers":%s,"leases":%s}\n' "${st:-null}" "${sv:-[]}" "${ls:-[]}"
+	exit 0
+fi
+
+[ "${REQUEST_METHOD:-}" = POST ] && [ "${HTTP_X_CATTUNNEL:-}" = 1 ] || { hdr "403 Forbidden"; echo '{"ok":false,"out":"forbidden"}'; exit 0; }
+len=${CONTENT_LENGTH:-0}
+case "$len" in ''|*[!0-9]*) len=0 ;; esac
+[ "$len" -le 16384 ] || reply false "слишком большой запрос"
+body=$(head -c "$len")
+has() { printf '%s\n' "$body" | tr '&' '\n' | grep -q "^$1="; }
+param() {  # url-декодированное значение поля
+	v=$(printf '%s\n' "$body" | tr '&' '\n' | sed -n "s/^$1=//p" | head -n 1 | sed 's/+/ /g; s/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')
+	printf '%b' "$v" | tr -d '\r\n'
+}
+was_on() { $CT status 2>/dev/null | head -n 1 | grep -q -E '^(работает|ждёт)'; }
+
+case "$(param action)" in
+	save)
+		set --
+		for k in MODE DEVICES KILLSWITCH IDLE_STOP RU_DIRECT; do has "$k" && set -- "$@" "$k" "$(param "$k")"; done
+		[ $# -gt 0 ] || reply false "нечего сохранять"
+		out=$($CT set "$@" 2>&1) || reply false "$out"
+		if was_on; then out="$out$($CT restart 2>&1)"; fi
+		reply true "Сохранено. $out" ;;
+	use)
+		out=$($CT use "$(param server)" 2>&1) || reply false "$out"
+		if was_on; then $CT restart >/dev/null 2>&1; fi
+		reply true "Сервер выбран" ;;
+	start|stop|restart)
+		a=$(param action); out=$($CT "$a" 2>&1); reply true "$out" ;;
+	exec)
+		# те же команды, что разрешены страницам LuCI на OpenWrt (acl.d/luci-app-cattunnel.json)
+		set --; i=0
+		while has "a$i" && [ $i -lt 16 ]; do set -- "$@" "$(param "a$i")"; i=$((i + 1)); done
+		cmd=$(param cmd)
+		case "$cmd" in
+			*/init.d/cattunnel)
+				case "${1:-}" in
+					start|stop|restart) set -- "$1" ;;
+					enable)  if [ -x /etc/init.d/cattunnel ]; then /etc/init.d/cattunnel enable; else rm -f /opt/etc/cattunnel/autostart.off; fi; hdr; echo '{"code":0,"stdout":"","stderr":""}'; exit 0 ;;
+					disable) if [ -x /etc/init.d/cattunnel ]; then /etc/init.d/cattunnel disable; else touch /opt/etc/cattunnel/autostart.off; fi; hdr; echo '{"code":0,"stdout":"","stderr":""}'; exit 0 ;;
+					*) hdr "403 Forbidden"; echo '{"code":-1,"stdout":"","stderr":"нельзя"}'; exit 0 ;;
+				esac ;;
+			*/cattunnel)
+				ok=0
+				case "${1:-}|${2:-}" in
+					"json|status"|"json|servers"|"json|leases"|"json|doctor"|"json|direct"|"mihomo|"|"test|"|"update|"|"status|"|"upgrade|"|"upgrade|check") ok=1 ;;
+					"log|"*|"import|"*|"use|"*|"set|"*|"direct|"*) ok=1 ;;
+					"nikki|status"|"nikki|on"|"nikki|off"|"firewall|on"|"firewall|off"|"dns|on"|"dns|off"|"doctor|--apply") ok=1 ;;
+					"devices|on"|"devices|off"|"devices|status"|"ru|status"|"ru|update"|"web|status"|"web|password") ok=1 ;;
+				esac
+				[ $ok = 1 ] || { hdr "403 Forbidden"; echo '{"code":-1,"stdout":"","stderr":"команда не разрешена"}'; exit 0; } ;;
+			*) hdr "403 Forbidden"; echo '{"code":-1,"stdout":"","stderr":"нельзя"}'; exit 0 ;;
+		esac
+		e=$(mktemp /tmp/ct_web.XXXXXX)
+		o=$($CT "$@" 2>"$e"); c=$?
+		hdr; printf '{"code":%s,"stdout":%s,"stderr":%s}\n' "$c" "$(jstr "$o")" "$(jstr "$(cat "$e")")"
+		rm -f "$e"; exit 0 ;;
+	*) reply false "неизвестное действие" ;;
+esac

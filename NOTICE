@@ -1,0 +1,24 @@
+CatTunnel for routers
+
+Part of CatTunnel (https://github.com/Cattunnel/cattunnel), a VPN client for
+TrustTunnel servers based on TrustTunnel by AdGuard. Licensed under the Apache
+License, Version 2.0 (see LICENSE). The changes and additions by the CatTunnel
+authors are licensed under the Apache License, Version 2.0 as well.
+
+The packages built from this repository bundle:
+
+- trusttunnel_client, built from https://github.com/TrustTunnel/TrustTunnelClient
+  (Copyright Adguard Software Ltd, Apache License 2.0) with
+  engine/0001-anti-dpi-desync.patch. The anti-DPI techniques in that patch
+  (out-of-band byte, TTL-1 piece, split positions, custom-string syntax) are
+  adapted from ByeDPI (https://github.com/hufrea/byedpi), Copyright (c) 2024
+  hufrea, MIT License.
+- engine/*.patch for NativeLibsCommon and DnsLibs (AdGuard, Apache-2.0):
+  build fixes only.
+- age (https://github.com/FiloSottile/age), Copyright 2019 The age Authors and
+  Google LLC, BSD 3-Clause License.
+
+The license files of the engine and of age are installed with the package
+(/usr/share/doc/cattunnel/). shared/ holds copies of files from the main
+CatTunnel repository (Russian services list, "how the connection works" help);
+keys/ holds the public release key and the signing helper.
