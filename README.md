@@ -33,6 +33,9 @@ curl -fsSLO https://github.com/Cattunnel/cattunnel-router/releases/latest/downlo
 | `cattunnel_<ver>_entware-mipsel.ipk` | Keenetic на MT7621 (в т.ч. SmartBox Giga KN-1913), Entware `mipsel-3.4` |
 | `cattunnel_<ver>_entware-aarch64.ipk` | Keenetic / ASUS Merlin с Entware `aarch64-3.10` |
 | `cattunnel_<ver>_entware-armv7.ipk` | ASUS Merlin с Entware `armv7sf-k3.2` (на ядре 2.6 / `armv7sf-k2.6` — не проверено) |
+| `cattunnel-<ver>-r0_openwrt25-<arch>.apk` | OpenWrt 25.x (apk) |
+| `luci-app-cattunnel_<ver>_openwrt-all.ipk` | страницы LuCI для OpenWrt 23.05/24.10 (opkg) |
+| `luci-app-cattunnel-<ver>-r0_openwrt25.apk` | страницы LuCI для OpenWrt 25.x (apk) |
 
 `Architecture: all` — бинарники статические; при установке пакет сам запускает ядро и
 откатывается, если процессор не тот. Внутри: `cattunnel`, `trusttunnel_client` (~7–12 МБ),
@@ -55,7 +58,10 @@ sh install.sh --check          # только проверить
 sh install.sh                  # поставить / обновить (+ LuCI, если она есть)
 sh install.sh --reinstall      # переставить ту же версию
 sh install.sh --file /tmp/<пакет>   # без интернета (scp), хэш всё равно сверяется
+sh install.sh --from /tmp/ct   # без интернета: все файлы релиза в папке (пакет + LuCI), хэши сверяются
 ```
+Настройки лежат в `/etc/cattunnel/settings` (не в uci): `cattunnel settings` — показать,
+`cattunnel set ИМЯ значение` или LuCI — поменять.
 Проверить подпись на ПК: `openssl pkeyutl -verify -pubin -inkey cattunnel-release.pub.pem -rawin -in install.sh -sigfile <(base64 -d install.sh.sig)`.
 
 apk 3 (OpenWrt 25) ставит пакет, даже если preinst его отверг; тогда postinst удаляет бинарники,

@@ -203,12 +203,12 @@ cat > "$d/control/postinst" <<-'EOF'
 	exit 0
 EOF
 chmod 755 "$d/control/postinst"
-ipk "$d" "$OUT/luci-app-cattunnel_${VER}_all.ipk"
+ipk "$d" "$OUT/luci-app-cattunnel_${VER}_openwrt-all.ipk"
 mkapk "$d" luci-app-cattunnel "cattunnel luci-base rpcd" "LuCI pages for CatTunnel" "$OUT/luci-app-cattunnel-$(apkver "$VER")_openwrt25.apk"
-echo "$OUT/luci-app-cattunnel_${VER}_all.ipk $(stat -c %s "$OUT/luci-app-cattunnel_${VER}_all.ipk")"
+echo "$OUT/luci-app-cattunnel_${VER}_openwrt-all.ipk $(stat -c %s "$OUT/luci-app-cattunnel_${VER}_openwrt-all.ipk")"
 
 luci_kb=$(( $(du -sk "$d/data" | cut -f1) + 64 ))
-echo "luci-openwrt all luci-app-cattunnel_${VER}_all.ipk $luci_kb" >> "$work/pkgs"
+echo "luci-openwrt all luci-app-cattunnel_${VER}_openwrt-all.ipk $luci_kb" >> "$work/pkgs"
 [ -x "$APK" ] && echo "luci-openwrt25 all luci-app-cattunnel-$(apkver "$VER")_openwrt25.apk $luci_kb" >> "$work/pkgs"
 
 # install.sh: сам выбирает пакет под роутер, проверяет до установки, сверяет SHA-256 с вшитыми

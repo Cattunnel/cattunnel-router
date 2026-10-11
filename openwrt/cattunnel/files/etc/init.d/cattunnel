@@ -17,11 +17,19 @@ start_service() {
 	procd_set_param command /usr/bin/cattunnel run
 	# сбой — перезапуск через 5 с, без лимита (сеть пропала, сервер «заморожен» и т.п.)
 	procd_set_param respawn 3600 5 0
+	# сторожу хватает времени погасить свой движок по TERM (проверка curl идёт до 8 с)
+	procd_set_param term_timeout 20
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
 }
 
-stop_service() {
+# Движок гасит сам сторож по TERM. Раньше killall шёл ДО остановки сторожа: тот видел, что движок
+# упал, запускал новый — и через 5 с procd добивал сторожа KILL, а новый движок оставался сиротой.
+# Здесь — только добрать то, что осталось, когда сторожа уже нет.
+service_stopped() {
 	killall trusttunnel_client 2>/dev/null || true
+	sleep 1
+	killall -9 trusttunnel_client 2>/dev/null || true
+	ip link delete tt0 2>/dev/null || true
 }

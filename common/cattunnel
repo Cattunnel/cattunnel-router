@@ -25,6 +25,7 @@
 #   cattunnel start|stop|restart|status фоном, для Entware без procd
 #   cattunnel test                      проверить, что через туннель есть интернет
 #   cattunnel config                    показать собранный конфиг движка (без пароля)
+#   cattunnel settings                  текущие настройки (файл /etc/cattunnel/settings; в uci их нет)
 #   cattunnel mihomo                    кусок конфига mihomo/nikki: прокси CatTunnel, группа
 #                                       с запасным VLESS и DIRECT для адресов наших серверов
 #   cattunnel json status|servers       для LuCI: состояние и список серверов в JSON
@@ -546,8 +547,41 @@ PID=""
 stop_engine() {
 	[ -n "$PID" ] || return 0
 	kill "$PID" 2>/dev/null || true
+	i=0; while kill -0 "$PID" 2>/dev/null && [ $i -lt 5 ]; do sleep 1; i=$((i + 1)); done
+	kill -9 "$PID" 2>/dev/null || true
 	wait "$PID" 2>/dev/null || true
 	PID=""
+}
+
+# Пауза, которую прерывает сигнал: у sh ловушка срабатывает только после текущей команды, и обычный
+# `sleep 30` держал TERM до 30 с — procd за это время добивал сторожа KILL, а его движок оставался
+# сиротой (держит порт/tt0, новый сразу падает, проверка идёт через сироту). `wait` прерывается сразу.
+nap() {
+	sleep "$1" &
+	_nap=$!
+	wait "$_nap" 2>/dev/null || true
+	kill "$_nap" 2>/dev/null || true
+}
+
+# Движки, которые не наши: после KILL сторожа, ручного `cattunnel run` в закрытом ssh и т.п. Сторож
+# один (pid-файл), так что любой движок, кроме $PID, — сирота. Гасим до запуска своего.
+kill_strays() {
+	strays=""
+	for p in $(pgrep -f "^$ENGINE" 2>/dev/null); do [ "$p" = "$PID" ] || strays="$strays $p"; done
+	[ -n "$strays" ] || return 0
+	say "гашу чужие движки:$strays (остались от прошлого запуска)"
+	for p in $strays; do kill "$p" 2>/dev/null || true; done
+	i=0; while [ $i -lt 5 ]; do
+		alive=""; for p in $strays; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+		[ -n "$alive" ] || break
+		sleep 1; i=$((i + 1))
+	done
+	for p in $strays; do kill -9 "$p" 2>/dev/null || true; done
+	[ -d "/sys/class/net/$TUN_DEV" ] && ip link delete "$TUN_DEV" 2>/dev/null || true
+}
+
+engine_tail() {  # последние строки журнала движка — в logread, чтобы было видно, почему он упал
+	tail -n 3 "$LOG" 2>/dev/null | while IFS= read -r line; do say "  движок: $line"; done
 }
 
 connect() {  # <сервер>: поднять движок и дождаться интернета; 0 — работает (PID жив)
@@ -563,6 +597,7 @@ connect() {  # <сервер>: поднять движок и дождаться
 		case " $tried " in *" $m "*) continue ;; esac
 		tried="$tried $m"
 		trim_log
+		kill_strays
 		if [ -d "/sys/class/net/$TUN_DEV" ] && ! engine_running; then ip link delete "$TUN_DEV" 2>/dev/null || true; fi
 		if [ "$m" = - ]; then write_toml "$k"; else write_toml "$k" "$m"; fi
 		ca_build
@@ -572,7 +607,7 @@ connect() {  # <сервер>: поднять движок и дождаться
 		PID=$!
 		i=0
 		while [ $i -lt $((AUTO_WAIT * 2)) ] && kill -0 "$PID" 2>/dev/null; do
-			sleep 1; i=$((i + 1))
+			nap 1; i=$((i + 1))
 			# DEVICES: проверка идёт с адреса tt0 — его правило и маршрут нужны ДО проверки
 			if [ "$MODE" = tun ] && [ -n "$DEVICES" ] && [ -d "/sys/class/net/$TUN_DEV" ]; then devices_check "$k"; fi
 			if probe; then
@@ -582,6 +617,8 @@ connect() {  # <сервер>: поднять движок и дождаться
 			# «Авто» даёт способу 15 с, обычный сервер ждём 30 с
 			[ "$m" != - ] && [ $i -ge "$AUTO_WAIT" ] && break
 		done
+		# движок не дожил до проверки — сказать почему (иначе в журнале только «не подключился»)
+		kill -0 "$PID" 2>/dev/null || { say "$k: движок завершился через $i с"; engine_tail; }
 		stop_engine
 		[ "$m" = - ] || say "анти-DPI авто: способ $m не прошёл ($k)"
 	done
@@ -1151,7 +1188,8 @@ cmd_run() {  # передний план, не выходит: сторож ту
 	ru_maybe_update
 	# tun: зона/правила фаервола должны быть всегда (их могло снять удаление пакета) — идемпотентно
 	if [ "$MODE" = tun ]; then firewall on; fi
-	trap 'stop_engine; rm -f "$RUN/active" "$RUN/run.pid"; exit 0' TERM INT
+	trap 'stop_engine; rm -f "$RUN/active" "$RUN/run.pid"; exit 0' TERM INT HUP
+	kill_strays
 	if [ "$MODE" != tun ] || [ "$DNS" != tunnel ] || [ -n "$DEVICES" ]; then dns_apply off; fi
 	# DEVICES выключили — снять его правила; включили — kill switch для устройств уже до подключения
 	if [ "$MODE" = tun ] && [ -n "$DEVICES" ]; then devices_apply on "$SERVER"; else devices_apply off; fi
@@ -1169,7 +1207,7 @@ cmd_run() {  # передний план, не выходит: сторож ту
 			failed_round=0
 			fails=0; on_backup=0; crashed=1
 			while kill -0 "$PID" 2>/dev/null; do
-				sleep "$CHECK_EVERY"
+				nap "$CHECK_EVERY"
 				trim_log
 				if probe; then fails=0; else fails=$((fails + 1)); fi
 				[ "$MODE" = tun ] && devices_check "$active"
@@ -1201,14 +1239,14 @@ cmd_run() {  # передний план, не выходит: сторож ту
 			done
 			stop_engine
 			# Движок упал сам (а не сервер пропал) — сначала тот же сервер ещё раз.
-			if [ "$crashed" = 1 ]; then say "$active: движок остановился, переподключаюсь"; sleep 3; continue; fi
+			if [ "$crashed" = 1 ]; then say "$active: движок остановился, переподключаюсь"; engine_tail; nap 3; continue; fi
 		else
 			say "$active: не подключился"
 		fi
 		# Пропал сам интернет (не сервер) — менять сервер бессмысленно: ждать на этом же.
 		if ! wan_ok; then
 			say "нет интернета у роутера — жду на $active"
-			while ! wan_ok; do sleep 15; done
+			while ! wan_ok; do nap 15; done
 			say "интернет вернулся"
 			continue
 		fi
@@ -1218,10 +1256,10 @@ cmd_run() {  # передний план, не выходит: сторож ту
 			if [ "$active" = "$SERVER" ]; then
 				failed_round=$((failed_round + 1))
 				say "ни один сервер не ответил, пауза $((60 * failed_round)) с"
-				sleep $((60 * failed_round > 600 ? 600 : 60 * failed_round))
+				nap $((60 * failed_round > 600 ? 600 : 60 * failed_round))
 			fi
 		else
-			sleep 30
+			nap 30
 		fi
 	done
 }
@@ -1394,7 +1432,7 @@ doctor_scan() {
 	cur=${SOCKS##*:}
 	if port_busy "$cur" && ! engine_running; then
 		for p in $(seq 1081 1099); do port_busy "$p" || { D_SOCKS="${SOCKS%:*}:$p"; break; }; done
-		d_add warn "порт $cur занят другой программой — предлагаю ${D_SOCKS:-другой порт}"
+		d_add warn "порт $cur занят другой программой — SOCKS переедет на ${D_SOCKS:-другой порт} (cattunnel doctor --apply или кнопка «Применить»)"
 	fi
 	sx=${D_SOCKS:-$SOCKS}   # в подсказках — порт, который будет после применения
 	if [ -n "$proxy" ]; then
@@ -1434,8 +1472,22 @@ doctor_scan() {
 	[ -n "$pbr" ] && d_add warn "найден$pbr — правила маршрутизации останутся; для tun лучше отдать маршруты им: устройство $TUN_DEV, а CatTunnel маршруты не ставит (спросите — сделаю отдельную настройку)"
 	[ -n "$zap" ] && d_add info "найден zapret — не мешает: он обходит DPI для прямого (российского) трафика, туннель защищён сам"
 	[ -c /dev/net/tun ] || d_add warn "нет /dev/net/tun — режим tun работать не будет (OpenWrt: opkg install kmod-tun)"
+	# память: свободно (MemAvailable) + свободный swap/zram — вместе; одна формулировка с install.sh
 	mem=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
-	[ "${mem:-999}" -lt 40 ] && d_add warn "свободно всего ${mem} МБ памяти — движку нужно ~10–20 МБ; закройте лишнее или поставьте swap"
+	total=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+	swapf=$(awk '/^SwapFree:/ {print int($2 / 1024)}' /proc/meminfo)
+	swapt=$(awk '/^SwapTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+	mtxt="свободно ${mem:-?} из ${total:-?} МБ$( [ "${swapt:-0}" -gt 0 ] && echo ", swap ${swapf} из ${swapt} МБ")"
+	if [ $(( ${mem:-999} + ${swapf:-0} )) -lt 40 ]; then
+		d_add warn "память: $mtxt — движку нужно ~10–20 МБ; закройте лишнее или включите zram-swap"
+	else
+		d_add ok "память: $mtxt — хватит"
+	fi
+	# swap на флешке/диске медленный и изнашивает носитель: если zram нет — посоветовать его
+	if [ "${swapt:-0}" -gt 0 ] && ! grep -q '^/dev/zram' /proc/swaps 2>/dev/null; then
+		sdev=$(awk 'NR > 1 {print $1; exit}' /proc/swaps)
+		d_hint "swap сейчас на носителе ($sdev) — он медленный и изнашивает флешку. Лучше zram в памяти: $( command -v apk >/dev/null 2>&1 && echo 'apk add zram-swap' || echo 'opkg install zram-swap'); и echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf; sysctl -p /etc/sysctl.d/99-swappiness.conf"
+	fi
 	return 0
 }
 
@@ -1448,14 +1500,14 @@ cmd_doctor() {
 	done
 	[ -n "$D_HINT" ] && { echo; echo "Как встроить:"; printf '%s' "$D_HINT" | sed 's/^/  - /'; }
 	echo
-	echo "Рекомендую: режим $D_MODE, DNS $D_DNS${D_SOCKS:+, SOCKS $D_SOCKS}  (сейчас: режим $MODE, DNS $DNS, SOCKS $SOCKS)"
+	echo "Рекомендую: режим $D_MODE, DNS $D_DNS${D_SOCKS:+, SOCKS $D_SOCKS (порт ${SOCKS##*:} занят)}  (сейчас: режим $MODE, DNS $DNS, SOCKS $SOCKS)"
 	if [ "${1:-}" = --apply ]; then
-		[ -n "$D_SOCKS" ] && save_setting SOCKS "$D_SOCKS"
+		[ -n "$D_SOCKS" ] && { echo "Порт ${SOCKS##*:} занят → SOCKS переведён на $D_SOCKS"; save_setting SOCKS "$D_SOCKS"; }
 		save_setting MODE "$D_MODE"
 		save_setting DNS "$D_DNS"
 		[ "$D_MODE" = tun ] && firewall on || firewall off
 		[ "$D_MODE" = tun ] && [ "$D_DNS" = tunnel ] && [ -f "$BUNDLE" ] && dns_apply on || dns_apply off
-		echo "Применено."
+		echo "Применено: режим $D_MODE, DNS $D_DNS, SOCKS ${D_SOCKS:-$SOCKS}. Перезапуск: /etc/init.d/cattunnel restart (или кнопка в LuCI)"
 	fi
 }
 
@@ -1626,6 +1678,8 @@ case "${1:-}" in
 	        { [ $# -ge 2 ] && [ $(( $# % 2 )) -eq 0 ]; } || die "cattunnel set <ИМЯ> <значение> [<ИМЯ> <значение> ...]"
 	        while [ $# -ge 2 ]; do save_setting "$1" "$2"; shift 2; done ;;
 	config) write_toml "$SERVER"; sed 's/^\(password = \).*/\1"…"/' "$TOML" ;;
+	settings) echo "# $SETTINGS (настройки CatTunnel хранятся здесь, не в uci; менять: cattunnel set ИМЯ значение или LuCI)"
+	        [ -f "$SETTINGS" ] && sed "s#^\(SUB_URL='[^']*/api/ct/\).*#\1…'#" "$SETTINGS" || echo "# пока пусто — всё по умолчанию" ;;
 	run)    cmd_run ;;
 	start)  if running; then echo "уже работает"; exit 0; fi
 	        ( while :; do "$0" run >> "$LOG" 2>&1 || true; sleep 5; done ) </dev/null >/dev/null 2>&1 &
