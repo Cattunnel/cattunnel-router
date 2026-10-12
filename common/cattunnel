@@ -25,7 +25,7 @@
 #   cattunnel start|stop|restart|status фоном, для Entware без procd
 #   cattunnel test                      проверить, что через туннель есть интернет
 #   cattunnel config                    показать собранный конфиг движка (без пароля)
-#   cattunnel settings                  текущие настройки (файл /etc/cattunnel/settings; в uci их нет)
+#   cattunnel settings                  текущие настройки (файл cattunnel.conf; в uci их нет)
 #   cattunnel mihomo                    кусок конфига mihomo/nikki: прокси CatTunnel, группа
 #                                       с запасным VLESS и DIRECT для адресов наших серверов
 #   cattunnel json status|servers       для LuCI: состояние и список серверов в JSON
@@ -704,7 +704,7 @@ upgrade_available() {  # есть версия новее нашей (на зе�
 }
 
 upgrade_maybe_check() {  # раз в сутки, тихо (в цикле сторожа и при ожидании устройств)
-	last=$(cut -d' ' -f1 "$ETC/upgrade.state" 2>/dev/null); last=${last:-0}
+	last=$(cut -d' ' -f1 "$ETC/upgrade.state" 2>/dev/null || true); last=${last:-0}
 	case "$last" in *[!0-9]*) last=0 ;; esac
 	[ $(( $(date +%s) - last )) -ge "$UPGRADE_EVERY" ] || return 0
 	( upgrade_check ) >/dev/null 2>&1 || true
@@ -1539,12 +1539,12 @@ NK_GROUP=CatTunnel-VPN
 NK_SELECTORS="PROXY YOUTUBE FINAL"
 
 nk_profile() {  # текущий профиль nikki
-	f=$(uci -q get nikki.config.profile)
-	case "$f" in file:*) echo "/etc/nikki/profiles/${f#file:}" ;; subscription:*) echo "" ;; *) [ -f /etc/nikki/profiles/main.yaml ] && echo /etc/nikki/profiles/main.yaml ;; esac
+	f=$(uci -q get nikki.config.profile || true)
+	case "$f" in file:*) echo "/etc/nikki/profiles/${f#file:}" ;; subscription:*) echo "" ;; *) if [ -f /etc/nikki/profiles/main.yaml ]; then echo /etc/nikki/profiles/main.yaml; fi ;; esac
 }
 
 nk_backup_proxy() {  # прокси пользователя для запасного пути: первый не-DIRECT в первом селекторе
-	yq -M -r '[.proxy-groups[] | select(.type == "select") | .proxies[]] | map(select(. != "DIRECT" and . != "REJECT" and . != "'"$NK_GROUP"'")) | .[0] // ""' "$1" 2>/dev/null
+	yq -M -r '[.proxy-groups[] | select(.type == "select") | .proxies[]] | map(select(. != "DIRECT" and . != "REJECT" and . != "'"$NK_GROUP"'")) | .[0] // ""' "$1" 2>/dev/null || true
 }
 
 nk_ok() {  # nikki поднялся и не ругается на профиль
@@ -1560,8 +1560,8 @@ cmd_nikki() {
 	case "${1:-status}" in
 	status)
 		[ -n "$prof" ] && [ -f "$prof" ] || die "у nikki не выбран профиль-файл (подписки nikki не правлю)"
-		in_mix=$(yq -M '[.nikki-proxies[]?.name] | contains(["CatTunnel"])' "$NK_MIXIN" 2>/dev/null)
-		in_sel=$(yq -M '[.proxy-groups[] | select(.name == "PROXY") | .proxies[0]] | .[0] == "'"$NK_GROUP"'"' "$prof" 2>/dev/null)
+		in_mix=$(yq -M '[.nikki-proxies[]?.name] | contains(["CatTunnel"])' "$NK_MIXIN" 2>/dev/null || true)
+		in_sel=$(yq -M '[.proxy-groups[] | select(.name == "PROXY") | .proxies[0]] | .[0] == "'"$NK_GROUP"'"' "$prof" 2>/dev/null || true)
 		echo "профиль: $prof; mixin: $(uci -q get nikki.mixin.mixin_file_content); CatTunnel в mixin: $in_mix; первым в селекторах: $in_sel"
 		[ "$in_mix" = true ] && [ "$in_sel" = true ]
 		;;
@@ -1634,7 +1634,7 @@ nk_restore() {  # <профиль>: вернуть профиль/mixin/флаг
 running() { { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; } || [ -n "$(run_pids)" ]; }
 run_pids() {  # сторожа «cattunnel run» (зовётся из start/stop — сами они не «run»); без их подоболочек
 	for p in $(pgrep -f "cattunnel run\$" 2>/dev/null); do
-		pp=$(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null)
+		pp=$(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null || true)
 		{ tr '\0' ' ' < "/proc/$pp/cmdline"; } 2>/dev/null | grep -q "cattunnel run" || echo "$p"
 	done
 }
