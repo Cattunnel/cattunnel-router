@@ -61,7 +61,7 @@
 
 ## Техническая информация
 
-- **Движок:** TrustTunnelClient 1.3.0-beta.1 с патчами CatTunnel — тот же, что в приложении, собран статически для роутеров.
+- **Движок:** TrustTunnelClient 1.3.0-beta.1 с патчами CatTunnel (обход блокировок; с 1.5.5 — правильно видит сеть на роутерах, где маршруты разложены по нескольким таблицам: mwan3, pbr), собран статически для роутеров.
 - **Процессоры:** aarch64 (MediaTek MT7981/MT7986 и др.), armv7, mipsel (MT7621 и др.), x86_64.
 - **Пакеты:** `.ipk` для OpenWrt 23.05 / 24.10, `.apk` для OpenWrt 25, `.ipk` для Entware (Keenetic, ASUS Merlin).
 - **Команда `cattunnel`** — всё то же из консоли: `status`, `test`, `list`, `use`, `set`, `devices status`, `ru status`, `log`, `doctor`. Без аргументов — список команд.

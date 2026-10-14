@@ -33,15 +33,18 @@ curl -fsSLO https://github.com/Cattunnel/cattunnel-router/releases/latest/downlo
 | `cattunnel_<ver>_entware-mipsel.ipk` | Keenetic на MT7621 (в т.ч. SmartBox Giga KN-1913), Entware `mipsel-3.4` |
 | `cattunnel_<ver>_entware-aarch64.ipk` | Keenetic / ASUS Merlin с Entware `aarch64-3.10` |
 | `cattunnel_<ver>_entware-armv7.ipk` | ASUS Merlin с Entware `armv7sf-k3.2` (на ядре 2.6 / `armv7sf-k2.6` — не проверено) |
+| `cattunnel_<ver>_openwrt-x86_64.ipk`, `cattunnel_<ver>_entware-x86_64.ipk` | OpenWrt / Entware на x86_64 (виртуальные машины, мини-ПК) |
 | `cattunnel-<ver>-r0_openwrt25-<arch>.apk` | OpenWrt 25.x (apk) |
 | `luci-app-cattunnel_<ver>_openwrt-all.ipk` | страницы LuCI для OpenWrt 23.05/24.10 (opkg) |
 | `luci-app-cattunnel-<ver>-r0_openwrt25.apk` | страницы LuCI для OpenWrt 25.x (apk) |
 
 `Architecture: all` — бинарники статические; при установке пакет сам запускает ядро и
 откатывается, если процессор не тот. Внутри: `cattunnel`, `trusttunnel_client` (~7–12 МБ),
-`age` 1.3.2 (~5 МБ), лицензии и наш патч ядра.
+`age` 1.3.2 (~5 МБ), лицензии и наши патчи ядра (`/usr/share/doc/cattunnel/`).
 
-Сборка с нуля: ядро — `engine/build_router.sh` (zig, см. шапку скрипта),
+Сборка с нуля: ядро — `engine/build_router.sh` (zig, см. шапку скрипта) из TrustTunnelClient
+v1.3.0-beta.1 с патчами `engine/0001-anti-dpi-desync.patch` (анти-DPI) и
+`engine/0002-network-monitor-policy-routing.patch` (см. «Что нового в 1.5.5»);
 age — `go build filippo.io/age/cmd/age` (CGO_ENABLED=0, GOARCH под роутер, softfloat).
 
 ## Установка
@@ -160,6 +163,25 @@ Keenetic пересобирает iptables сам; хук `/opt/etc/ndm/netfilte
 Как Keenetic, пакет `entware-aarch64` или `entware-armv7`. Merlin тоже пересобирает iptables:
 добавить в `/jffs/scripts/nat-start` строку `/opt/bin/cattunnel firewall on` (и `chmod +x`).
 
+## Что нового
+
+**1.5.5**
+- Ядро с патчем `0002-network-monitor-policy-routing.patch`. Монитор сети в ядре искал маршрут по
+  умолчанию только в таблице `main`; где маршруты разложены по своим таблицам (`ip rule`: mwan3,
+  pbr, свои схемы), после любой смены адресов или маршрутов движок решал «сети нет» и ждал её
+  бесконечно — сторож видел мёртвый туннель и перебирал серверы. Теперь движок спрашивает само ядро,
+  есть ли маршрут в интернет, и переподключается, только если сменился адрес выхода. На обычном
+  OpenWrt, Keenetic и Merlin поведение прежнее.
+
+**1.5.4**
+- Сторож больше не падает на свежей установке (пока не было ни одной проверки обновлений):
+  раньше это давало переподключение каждые ~37 с. Тот же шаблон исправлен в работе с nikki.
+
+**1.5.3**
+- Нет «осиротевших» движков: при остановке сторож сам гасит свой движок, лишние движки
+  убиваются перед каждым запуском. `install.sh --from <папка>` — установка без интернета.
+  `cattunnel doctor`: понятнее про память, swap и zram.
+
 ## Как это устроено
 - Подписка: `cattunnel update` качает `<ссылка>?format=router` (бот отдаёт те же серверы, что
   приложению, но готовыми секциями `[endpoint]` для движка), расшифровывает `age` и хранит в
@@ -169,7 +191,16 @@ Keenetic пересобирает iptables сам; хук `/opt/etc/ndm/netfilte
   выбранного сервера и своего режима и запускает движок на переднем плане (procd / start).
 - «Авто» анти-DPI: если подписка просит его для сервера, `run` пробует способы 1, 2, 3 по 15 с,
   проверяя интернет через туннель; удачный запоминается для сервера и в следующий раз первый.
+- Сторож проверяет туннель каждые 30 с. Выбранный сервер не отвечает 2 минуты (4 проверки
+  подряд) — переход на следующий по порядку подписки (`FAILOVER on`), раз в 30 минут — попытка
+  вернуться на выбранный. Пропал интернет у самого роутера — серверы не перебираются.
 - Настройки — `/etc/cattunnel/cattunnel.conf` (`cattunnel set …`), на Entware всё под `/opt`.
+- Свои сайты и IP напрямую: `cattunnel direct add|del|list|clear` (режим tun).
+- Обновление: раз в сутки проверяется `install.sh` в последнем релизе (подпись Ed25519);
+  `cattunnel upgrade check|now`, на странице «Состояние» — кнопка «Обновить».
+- Автозапуск при загрузке переживает переустановку пакета: `cattunnel autostart on|off|status`.
+- `cattunnel doctor` — «соседи по роутеру»: другие VPN, прокси, DNS-менеджеры, pbr/mwan3, nikki, память и swap;
+  `cattunnel nikki on|off|status` — встроить CatTunnel в профиль nikki (с резервной копией).
 
 ## Риски
 - Память: ядро 7–12 МБ на диске, ОЗУ при работе — проверить на 128 МБ моделях.
@@ -193,7 +224,7 @@ Keenetic пересобирает iptables сам; хук `/opt/etc/ndm/netfilte
 
 **Работа**
 - SOCKS5 и tun; DNS через туннель; российские сайты напрямую (по доменам и ~26 тыс. сетей geoip:ru); свой список «напрямую».
-- Kill switch: сервер пропал — напрямую ничего не уходит. Смена сервера при отказе (~30 с).
+- Kill switch: сервер пропал — напрямую ничего не уходит. Смена сервера, когда выбранный не отвечает 2 минуты.
 - «Только эти устройства» по MAC и по имени (в т.ч. телефоны с меняющимся MAC), IPv6 этих устройств через туннель, их DNS по IPv6 не уходит мимо туннеля.
 - Туннель по требованию: без устройств движок не работает, поднимается за 5–7 с, когда устройство выходит в интернет. Метки устройств возвращаются сами после пересборки iptables на Keenetic.
 - Встраивание в nikki/mihomo: CatTunnel первым в группах, запрос из LAN через mihomo проходит; mihomo в режиме fake-ip — имена серверов разрешаются в обход.

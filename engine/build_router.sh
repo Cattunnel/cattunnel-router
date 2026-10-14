@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Наш trusttunnel_client (v1.3.0-beta.1 + 0001-anti-dpi-desync.patch) для роутеров:
+# Наш trusttunnel_client (v1.3.0-beta.1 + 0001-anti-dpi-desync.patch + 0002-network-monitor-policy-routing.patch) для роутеров:
 # статические musl-сборки через zig, как официальные linux-<arch> релизы AdGuard
 # (пресеты musl-cross-<arch> из их CMakePresets.json).
 #
@@ -29,7 +29,7 @@
 # Первая сборка под архитектуру ~30–40 мин (зависимости), потом минуты.
 set -euo pipefail
 B=~/tt-build
-SRC=${TT_SRC:-$B/TTC-clean}           # чистое дерево: тег + 0001-anti-dpi-desync.patch
+SRC=${TT_SRC:-$B/TTC-clean}           # чистое дерево: тег + 0001-anti-dpi-desync.patch + 0002-network-monitor-policy-routing.patch
 OUT=$B/router-bin
 export PATH=$HOME/development/zig-x86_64-linux-0.17.0:$B/conan/bin:$HOME/.cargo/bin:$PATH
 export CONAN_HOME=$B/conan-home

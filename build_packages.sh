@@ -75,6 +75,7 @@ for A in $ARCHES; do
 		install -Dm644 "$HOME/tt-build/TTC-clean/LICENSE" "$d/data$P/usr/share/doc/cattunnel/LICENSE.TrustTunnelClient"
 		install -Dm644 "$AGE_LICENSE" "$d/data$P/usr/share/doc/cattunnel/LICENSE.age"
 		install -Dm644 "$ROOT/engine/0001-anti-dpi-desync.patch" "$d/data$P/usr/share/doc/cattunnel/0001-anti-dpi-desync.patch"
+		install -Dm644 "$ROOT/engine/0002-network-monitor-policy-routing.patch" "$d/data$P/usr/share/doc/cattunnel/0002-network-monitor-policy-routing.patch"
 		# встроенные российские домены/сети (как в приложении) — RU_DIRECT работает и без скачанного списка
 		install -Dm644 "$ROOT/shared/ru_services.txt" "$d/data$P/usr/share/cattunnel/ru_services.txt"
 		# самообновление: своя версия, зеркала и ключ, которым подписан install.sh (cattunnel upgrade)
