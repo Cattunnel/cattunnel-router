@@ -36,7 +36,8 @@
 #   cattunnel nikki on|off|status       встроиться в nikki (mihomo) как родной: прокси CatTunnel,
 #                                       группа CatTunnel-VPN (CatTunnel → ваш VLESS), DIRECT для
 #                                       туннеля — через mixin nikki; CatTunnel-VPN первым в селекторы
-#                                       профиля; не поднялся nikki — всё откатывается само
+#                                       профиля и выбрана в них через API mihomo (off возвращает
+#                                       прежний выбор); не поднялся nikki — всё откатывается само
 #   cattunnel devices on|off|status     DEVICES: поставить/снять правила (сторож делает это сам)
 #   cattunnel direct list|add|del|set|clear  свои сайты и IP напрямую, мимо туннеля (режим tun), как в приложении
 #   cattunnel upgrade [check]           обновить пакет (install.sh с зеркал, подпись Ed25519 проверяется); сам проверяет раз в сутки
@@ -1547,6 +1548,36 @@ nk_backup_proxy() {  # прокси пользователя для запасн
 	yq -M -r '[.proxy-groups[] | select(.type == "select") | .proxies[]] | map(select(. != "DIRECT" and . != "REJECT" and . != "'"$NK_GROUP"'")) | .[0] // ""' "$1" 2>/dev/null || true
 }
 
+nk_api() {  # <метод> <путь> [тело]: API mihomo (external-controller и secret из конфига, с которым он запущен)
+	command -v curl >/dev/null 2>&1 || return 1
+	cfg=/etc/nikki/run/config.yaml; [ -f "$cfg" ] || cfg=$(nk_profile)
+	[ -n "$cfg" ] && [ -f "$cfg" ] || return 1
+	ctl=$(yq -M -r '.external-controller // ""' "$cfg" 2>/dev/null); [ -n "$ctl" ] || return 1
+	case "$ctl" in 0.0.0.0:*|:*|\[::\]:*) ctl=127.0.0.1:${ctl##*:} ;; esac
+	sec=$(yq -M -r '.secret // ""' "$cfg" 2>/dev/null)
+	curl -fsS -m 5 -X "$1" ${sec:+-H "Authorization: Bearer $sec"} ${3:+-H "Content-Type: application/json" -d "$3"} "http://$ctl$2"
+}
+
+nk_select() {  # выбрать CatTunnel-VPN в селекторах (store-selected иначе держит прошлый выбор); прошлый — в nikki-selected.bak
+	: > "$ETC/nikki-selected.bak"
+	n=0
+	for g in $NK_SELECTORS; do
+		now=$(nk_api GET "/proxies/$g" 2>/dev/null | yq -M -p json -r '.now // ""' 2>/dev/null) || continue
+		[ -n "$now" ] || continue
+		[ "$now" = "$NK_GROUP" ] || printf '%s\t%s\n' "$g" "$now" >> "$ETC/nikki-selected.bak"
+		nk_api PUT "/proxies/$g" "{\"name\":\"$NK_GROUP\"}" >/dev/null 2>&1 && n=$((n + 1))
+	done
+	echo "$n"
+}
+
+nk_unselect() {  # вернуть выбор в селекторах, какой был до «nikki on»
+	[ -f "$ETC/nikki-selected.bak" ] || return 0
+	while IFS="$(printf '\t')" read -r g was; do
+		[ -n "$g" ] && [ -n "$was" ] && nk_api PUT "/proxies/$g" "{\"name\":\"$was\"}" >/dev/null 2>&1 || true
+	done < "$ETC/nikki-selected.bak"
+	rm -f "$ETC/nikki-selected.bak"
+}
+
 nk_ok() {  # nikki поднялся и не ругается на профиль
 	sleep 6
 	pgrep -f "/usr/bin/mihomo" >/dev/null 2>&1 || return 1
@@ -1601,6 +1632,9 @@ cmd_nikki() {
 		if nk_ok; then
 			save_setting NIKKI on
 			echo "встроено: CatTunnel → $NK_GROUP (запасной: ${backup:-нет}) первым в $NK_SELECTORS; бэкап профиля: $prof.cattunnel-$stamp"
+			sel=$(nk_select)
+			if [ "${sel:-0}" -gt 0 ]; then echo "выбрано в $sel из групп $NK_SELECTORS (через API mihomo; прежний выбор вернётся при «cattunnel nikki off»)"
+			else say "не смог выбрать $NK_GROUP через API mihomo (нет curl или external-controller) — выберите вручную в панели nikki"; fi
 		else
 			say "nikki не поднялся с CatTunnel — откатываю"
 			nk_restore "$prof"
@@ -1608,6 +1642,7 @@ cmd_nikki() {
 		fi
 		;;
 	off)
+		nk_unselect
 		[ -n "$prof" ] && nk_restore "$prof"
 		save_setting NIKKI off
 		echo "CatTunnel убран из nikki, остальное как было"
