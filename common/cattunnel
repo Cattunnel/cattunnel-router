@@ -435,13 +435,22 @@ RU_ZONES="ru/su/xn--p1ai/xn--d1acj3b/moscow/tatar"
 wan_dns() {  # DNS провайдера (IPv4), как их выдал WAN
 	f=/tmp/resolv.conf.d/resolv.conf.auto
 	[ -f "$f" ] || f=/etc/resolv.conf
-	sed -n 's/^nameserver \([0-9][0-9.]*\)$/\1/p' "$f" | grep -v '^127\.' | head -n 2
+	sed -n 's/^nameserver \([0-9][0-9.]*\)$/\1/p' "$f" | grep -v '^127\.' | head -n 4
 }
 
-wan_ok() {  # есть ли у роутера интернет мимо туннеля: маршрут по умолчанию не через туннель + DNS провайдера отвечает
-	ip route show default 2>/dev/null | grep -v "dev $TUN_DEV" | grep -q '^default' || return 1
+WAN_WHY=""   # почему wan_ok сказал «нет»: для журнала ожидания
+
+wan_ok() {  # есть ли у роутера интернет мимо туннеля: маршрут по умолчанию не через туннель + DNS провайдера или адреса отвечают
+	if ! ip route show default 2>/dev/null | grep -v "dev $TUN_DEV" | grep -q '^default'; then
+		WAN_WHY="нет маршрута по умолчанию"; return 1
+	fi
 	for d in $(wan_dns); do nslookup ya.ru "$d" >/dev/null 2>&1 && return 0; done
-	[ -z "$(wan_dns)" ]   # DNS провайдера не известен — не мешаем перебору
+	# DNS провайдера может молчать при живом интернете (роутер за другим роутером: первым
+	# в resolv.conf.auto стоит его адрес, а он DNS не отвечает). Тогда спросить сами адреса.
+	for ip in 77.88.8.8 1.1.1.1 8.8.8.8; do ping -c 1 -W 2 "$ip" >/dev/null 2>&1 && return 0; done
+	WAN_WHY="DNS провайдера ($(wan_dns | tr '\n' ' ' | sed 's/ $//')) и 77.88.8.8/1.1.1.1/8.8.8.8 не отвечают"
+	[ -z "$(wan_dns)" ] && WAN_WHY="DNS провайдера не известен, адреса не отвечают"
+	return 1
 }
 
 resolve4() {  # <имя> -> IPv4 через DNS провайдера
@@ -1246,9 +1255,15 @@ cmd_run() {  # передний план, не выходит: сторож ту
 		fi
 		# Пропал сам интернет (не сервер) — менять сервер бессмысленно: ждать на этом же.
 		if ! wan_ok; then
-			say "нет интернета у роутера — жду на $active"
-			while ! wan_ok; do nap 15; done
-			say "интернет вернулся"
+			say "нет интернета у роутера — жду на $active ($WAN_WHY)"
+			# Ждать не дольше 5 минут: проверка могла ошибиться, а тогда вечное ожидание
+			# хуже лишней попытки. Каждую минуту - строка в журнал с причиной.
+			waited=0
+			while ! wan_ok && [ "$waited" -lt 300 ]; do
+				nap 15; waited=$((waited + 15))
+				[ $((waited % 60)) -eq 0 ] && say "всё ещё жду интернет ($waited с): $WAN_WHY"
+			done
+			if [ "$waited" -ge 300 ]; then say "ждал 5 минут, пробую подключиться всё равно"; else say "интернет вернулся"; fi
 			continue
 		fi
 		if [ "$FAILOVER" = on ]; then
