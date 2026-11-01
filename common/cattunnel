@@ -337,6 +337,11 @@ cmd_update() {
 	done
 	for u in $urls; do
 		if fetch_one "$u"; then
+			# Ответ без #mirrors не стирает запасные адреса: переносим прошлые. Новый список
+			# от сервера, наоборот, заменяет старый (сервер решает, какие зеркала живы).
+			if ! grep -q '^#mirrors ' "$RUN/sub.new" && grep -q '^#mirrors ' "$BUNDLE" 2>/dev/null; then
+				grep -m 1 '^#mirrors ' "$BUNDLE" >> "$RUN/sub.new"
+			fi
 			mv "$RUN/sub.new" "$BUNDLE"
 			say "подписка обновлена: $(grep -c '^@server ' "$BUNDLE") серверов"
 			if [ -z "$SERVER" ] || ! grep -q "^@server $SERVER " "$BUNDLE"; then

@@ -138,7 +138,8 @@ esac
     def updated(self, *args):
         result = self.call(*(args or ('update',)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.etc / 'servers.bundle').read_bytes(), BUNDLE)
+        # Servers come from the response; a saved #mirrors line may be carried over after them.
+        self.assertTrue((self.etc / 'servers.bundle').read_bytes().startswith(BUNDLE))
         return result
 
     def public_key(self):
@@ -245,6 +246,27 @@ esac
         self.assertEqual(len(self.requests), 2)
         headers = {k.lower(): v for k, v in self.requests[-1][1].items()}
         self.assertEqual(headers.get('x-device-key'), self.public_key())
+
+    def test_response_without_mirrors_keeps_saved_mirrors(self):
+        mirrors = f'#mirrors {self.url}/sub?format=router\n'.encode()
+        (self.etc / 'servers.bundle').write_bytes(BUNDLE + mirrors)
+        self.updated()
+        bundle = (self.etc / 'servers.bundle').read_bytes()
+        self.assertIn(b'@server de ', bundle)
+        self.assertEqual(bundle.count(b'#mirrors '), 1)
+        self.assertTrue(bundle.endswith(mirrors))
+
+    def test_response_mirrors_replace_saved_mirrors(self):
+        (self.etc / 'servers.bundle').write_bytes(BUNDLE + b'#mirrors https://old.invalid/api/ct/t?format=router\n')
+        fresh = f'#mirrors {self.url}/sub?format=router\n'.encode()
+        self.responses['/sub?format=router'] = (200, BUNDLE + fresh)
+        try:
+            self.updated()
+        finally:
+            self.responses['/sub?format=router'] = (200, BUNDLE)
+        bundle = (self.etc / 'servers.bundle').read_bytes()
+        self.assertNotIn(b'old.invalid', bundle)
+        self.assertTrue(bundle.endswith(fresh))
 
     def test_corrupt_existing_identity_is_never_rotated(self):
         (self.etc / 'device.key').write_text('broken\n')
