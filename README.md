@@ -2,7 +2,7 @@
 
 Версия [CatTunnel](https://github.com/Cattunnel/cattunnel) для роутеров: **OpenWrt** (23.05, 24.10, 25.x; страницы в LuCI), **Keenetic** и **ASUS Merlin** (Entware; своя веб-страница). Роутер держит туннель TrustTunnel — тот же движок с доработками, что в приложении (анти-DPI 1–3 и «авто», своя строка, отпечаток TLS, маскировка HTTP/2, отключение QUIC), а управляется командой `cattunnel`, страницами LuCI или веб-страницей.
 
-Подписка — та же ссылка и ключ age, что в приложении; сервер подписок должен отдавать список в формате для роутера (`?format=router`, строка `# cattunnel-router 1` в начале).
+Подписка — та же ссылка, что в приложении; сервер подписок должен отдавать список в формате для роутера (`?format=router`, строка `# cattunnel-router 1` в начале). При импорте или первом обновлении роутер создаёт свой ключ устройства (`device.key`) и отправляет открытый ключ серверу. Старый ключ пользователя (`age.key`) остаётся запасным для прежних серверов.
 
 > Аккаунт свежий — по соображениям безопасности. Проект ведётся уже около двух месяцев, и автор решил сделать его публичным без привязки к себе. Поэтому история разработки до публикации не перенесена: репозиторий начинается с уже готового кода.
 
@@ -40,12 +40,12 @@ curl -fsSLO https://github.com/Cattunnel/cattunnel-router/releases/latest/downlo
 
 `Architecture: all` — бинарники статические; при установке пакет сам запускает ядро и
 откатывается, если процессор не тот. Внутри: `cattunnel`, `trusttunnel_client` (~7–12 МБ),
-`age` 1.3.2 (~5 МБ), лицензии и наши патчи ядра (`/usr/share/doc/cattunnel/`).
+`age` 1.3.2 (~5 МБ), `age-keygen` из того же исходника, лицензии и наши патчи ядра (`/usr/share/doc/cattunnel/`).
 
 Сборка с нуля: ядро — `engine/build_router.sh` (zig, см. шапку скрипта) из TrustTunnelClient
 v1.3.0-beta.1 с патчами `engine/0001-anti-dpi-desync.patch` (анти-DPI) и
 `engine/0002-network-monitor-policy-routing.patch` (см. «Что нового в 1.5.5»);
-age — `go build filippo.io/age/cmd/age` (CGO_ENABLED=0, GOARCH под роутер, softfloat).
+age и age-keygen собираются из одного исходника age 1.3.2: `go build filippo.io/age/cmd/age` и `go build filippo.io/age/cmd/age-keygen` (CGO_ENABLED=0, GOARCH под роутер, softfloat). В `ROUTER_BIN` нужны оба файла: `age-<arch>` и `age-keygen-<arch>`; сборка пакета без age-keygen прерывается.
 
 ## Установка
 
@@ -246,4 +246,3 @@ Keenetic пересобирает iptables сам; хук `/opt/etc/ndm/netfilte
 ---
 
 При разработке использовался ИИ-ассистент Claude.
-

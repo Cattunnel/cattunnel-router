@@ -69,9 +69,12 @@ case "$LIB" in /opt/*) SHARE=/opt/usr/share/cattunnel ;; *) SHARE=/usr/share/cat
 RU_BASE=$SHARE/ru_services.txt
 AGE=$LIB/age
 [ -x "$AGE" ] || AGE=$(command -v age 2>/dev/null || echo "$LIB/age")
+AGE_KEYGEN=$LIB/age-keygen
+[ -x "$AGE_KEYGEN" ] || AGE_KEYGEN=$(command -v age-keygen 2>/dev/null || echo "$LIB/age-keygen")
 SETTINGS=$ETC/cattunnel.conf
 BUNDLE=$ETC/servers.bundle
 KEY=$ETC/age.key
+DEVICE_KEY=$ETC/device.key
 TOML=$RUN/client.toml
 LOG=$RUN/engine.log
 LOG_MAX_KB=256     # журнал движка в tmpfs (это ОЗУ роутера) — не больше этого
@@ -232,12 +235,57 @@ ca_build() {  # $ETC/ca.pem: системные корневые сертифи�
 	return 0
 }
 
+device_identity() {  # отдельная постоянная identity роутера; age.key пользователя не меняем
+	[ -x "$AGE_KEYGEN" ] || { say "нет age-keygen: переустановите полный пакет CatTunnel"; return 1; }
+	if [ ! -e "$DEVICE_KEY" ]; then
+		# Публикуем целый ключ без перезаписи: параллельный update должен взять тот же ключ.
+		dk_tmp=$(mktemp "$ETC/device.key.XXXXXX") || return 1
+		if ! "$AGE_KEYGEN" > "$dk_tmp" 2>/dev/null; then
+			rm -f "$dk_tmp"; say "не удалось создать ключ устройства"; return 1
+		fi
+		if ! ln "$dk_tmp" "$DEVICE_KEY" 2>/dev/null && [ ! -e "$DEVICE_KEY" ]; then
+			rm -f "$dk_tmp"; say "не удалось сохранить ключ устройства"; return 1
+		fi
+		rm -f "$dk_tmp"
+	fi
+	chmod 600 "$DEVICE_KEY" || return 1
+	DEVICE_PUBLIC_KEY=$("$AGE_KEYGEN" -y "$DEVICE_KEY" 2>/dev/null) || {
+		say "не читается ключ устройства; восстановите device.key из резервной копии"; return 1
+	}
+	printf '%s\n' "$DEVICE_PUBLIC_KEY" | grep -Eq '^age1[0-9a-z]{58}$' || {
+		say "некорректный открытый ключ устройства"; return 1
+	}
+}
+
+device_os() {
+	if [ -f /etc/openwrt_release ]; then echo openwrt
+	elif [ -d /etc/ndm ]; then echo keenetic
+	else echo entware; fi
+}
+
+device_model() {  # без hostname/серийного номера; только печатный ASCII, безопасный для HTTP
+	(
+		for dm_file in /tmp/sysinfo/model /proc/device-tree/model /sys/firmware/devicetree/base/model; do
+			if [ -s "$dm_file" ]; then cat "$dm_file"; exit; fi
+		done
+		dm_cpu=$(awk -F ': *' '/^(Model|Hardware|machine|system type)[[:space:]]*:/ {print $2; exit}' /proc/cpuinfo 2>/dev/null) || dm_cpu=""
+		if [ -n "$dm_cpu" ]; then printf '%s' "$dm_cpu"; else uname -m; fi
+	) | LC_ALL=C tr -cd ' -~' | cut -c 1-120
+}
+
 fetch_one() {  # url -> $RUN/sub.new (расшифрованный), 0 если похоже на подписку
 	ca_build
-	curl -fsS ${CA_OPT:-} --connect-timeout 7 --max-time 40 -o "$RUN/sub.raw" "$1" || return 1
+	curl -fsS ${CA_OPT:-} --connect-timeout 7 --max-time 40 \
+		-H "x-device-key: $DEVICE_PUBLIC_KEY" \
+		-H "x-app-version: cattunnel-router/$(pkg_version)" \
+		-H "x-device-os: $(device_os)" -H "x-device-model: $(device_model)" \
+		-o "$RUN/sub.raw" "$1" || return 1
 	if head -c 21 "$RUN/sub.raw" | grep -q '^age-encryption.org/v1'; then
-		[ -s "$KEY" ] || { say "подписка зашифрована, а ключа нет (cattunnel import <ссылка> <ключ>)"; return 1; }
-		"$AGE" -d -i "$KEY" -o "$RUN/sub.new" "$RUN/sub.raw" || return 1
+		if ! "$AGE" -d -i "$DEVICE_KEY" -o "$RUN/sub.new" "$RUN/sub.raw" 2>/dev/null; then
+			# Старый сервер может ещё шифровать ключом пользователя. Повреждённый age.key
+			# не должен мешать расшифровке исправным ключом устройства.
+			[ -s "$KEY" ] && "$AGE" -d -i "$KEY" -o "$RUN/sub.new" "$RUN/sub.raw" || return 1
+		fi
 	else
 		mv "$RUN/sub.raw" "$RUN/sub.new"
 	fi
@@ -247,6 +295,7 @@ fetch_one() {  # url -> $RUN/sub.new (расшифрованный), 0 если 
 
 cmd_update() {
 	[ -n "$SUB_URL" ] || die "нет подписки: cattunnel import <ссылка> <ключ>"
+	device_identity || die "обновление отменено: ключ устройства недоступен; сохранённая подписка не изменена"
 	# Сначала адреса из ссылки (их может быть несколько: «a | b»), потом зеркала из прошлой
 	# подписки — в том порядке, в каком их отдал сервер.
 	urls=""
@@ -278,7 +327,7 @@ cmd_import() {
 	case "$1" in *"'"*) die "в ссылке недопустимый символ" ;; esac
 	k=${2:-}
 	if [ -z "$k" ]; then
-		[ -t 0 ] && printf 'age-ключ (Enter — без шифрования): ' >&2
+		[ -t 0 ] && printf 'старый age-ключ пользователя (Enter — пропустить): ' >&2
 		read -r k || true
 	fi
 	if [ -n "$k" ]; then

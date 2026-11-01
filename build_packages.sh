@@ -51,6 +51,7 @@ ipk() {  # <dir with control/ and data/> <out.ipk>
 for A in $ARCHES; do
 	[ -x "$BIN/trusttunnel_client-$A" ] || { echo "нет $BIN/trusttunnel_client-$A" >&2; exit 1; }
 	[ -x "$BIN/age-$A" ] || { echo "нет $BIN/age-$A" >&2; exit 1; }
+	[ -x "$BIN/age-keygen-$A" ] || { echo "нет $BIN/age-keygen-$A (нужен статический age-keygen для ключа устройства)" >&2; exit 1; }
 	for FLAVOR in openwrt entware; do
 		d=$work/$FLAVOR-$A; rm -rf "$d"; mkdir -p "$d/control" "$d/data"
 		if [ $FLAVOR = openwrt ]; then P=""; LIBX=/usr/libexec/cattunnel; BINDIR=/usr/bin; ETC=/etc/cattunnel
@@ -72,6 +73,7 @@ for A in $ARCHES; do
 		install -Dm755 "$ROOT/common/cattunnel" "$d/data$BINDIR/cattunnel"
 		install -Dm755 "$BIN/trusttunnel_client-$A" "$d/data$LIBX/trusttunnel_client"
 		install -Dm755 "$BIN/age-$A" "$d/data$LIBX/age"
+		install -Dm755 "$BIN/age-keygen-$A" "$d/data$LIBX/age-keygen"
 		install -Dm644 "$HOME/tt-build/TTC-clean/LICENSE" "$d/data$P/usr/share/doc/cattunnel/LICENSE.TrustTunnelClient"
 		install -Dm644 "$AGE_LICENSE" "$d/data$P/usr/share/doc/cattunnel/LICENSE.age"
 		install -Dm644 "$ROOT/engine/0001-anti-dpi-desync.patch" "$d/data$P/usr/share/doc/cattunnel/0001-anti-dpi-desync.patch"
@@ -141,7 +143,7 @@ for A in $ARCHES; do
 			# поэтому здесь: убрать бинарники, выключить автозапуск, оставить метку и громко сказать.
 			if ! $LIBX/trusttunnel_client --version >/dev/null 2>&1; then
 			  msg="пакет не для этого роутера: процессор \$(uname -m), а пакет собран для $A. Удалите его (OpenWrt 25: apk del cattunnel, иначе opkg remove cattunnel) и поставьте нужный — проще всего через install.sh, он выбирает пакет сам"
-			  rm -f $LIBX/trusttunnel_client $LIBX/age
+			  rm -f $LIBX/trusttunnel_client $LIBX/age $LIBX/age-keygen
 			  mkdir -p $ETC && echo "\$msg" > $ETC/WRONG_ARCH
 			  [ ! -x /etc/init.d/cattunnel ] || /etc/init.d/cattunnel disable >/dev/null 2>&1 || true
 			  for fd in 1 2; do printf '\n!!! cattunnel: %s !!!\n\n' "\$msg" >&\$fd; done
