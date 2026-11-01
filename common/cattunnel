@@ -30,6 +30,7 @@
 #                                       с запасным VLESS и DIRECT для адресов наших серверов
 #   cattunnel json status|servers       для LuCI: состояние и список серверов в JSON
 #   cattunnel log [N]                   последние строки журнала движка (без паролей)
+#   cattunnel report                    обезличенный отчёт TXT для администратора
 #   cattunnel doctor [--apply]          найти другие VPN/прокси/DNS-службы, конфликты; предложить
 #                                       настройки, которые встраиваются в существующую схему
 #                                       (--apply — применить их); json doctor — для LuCI
@@ -1596,6 +1597,42 @@ doctor_scan() {
 	return 0
 }
 
+cmd_report() {
+	echo 'CatTunnel router problem report v1'
+	printf 'Time (UTC): '; date -u '+%Y-%m-%dT%H:%M:%SZ'
+	printf 'Package: '; pkg_version | LC_ALL=C tr -cd 'A-Za-z0-9._-'; echo
+	printf 'Platform: '; device_os
+	printf 'Kernel: '; uname -r | LC_ALL=C tr -cd 'A-Za-z0-9._+-'; echo
+	printf 'Engine: '; if engine_running; then echo running; else echo stopped; fi
+	case "$MODE" in tun|socks) echo "Mode: $MODE" ;; *) echo 'Mode: unknown' ;; esac
+	case "$DNS" in router|tunnel) echo "DNS: $DNS" ;; *) echo 'DNS: unknown' ;; esac
+	for name in RU_DIRECT FAILOVER KILLSWITCH; do
+		eval "value=\${$name:-}"
+		case "$value" in on|off) echo "$name: $value" ;; *) echo "$name: unknown" ;; esac
+	done
+	printf 'Device selection: '; if [ -n "$DEVICES" ]; then echo configured; else echo all; fi
+	printf 'Subscription: '; if [ -n "$SUB_URL" ]; then echo configured; else echo absent; fi
+	printf 'Server count: '; awk '/^@server / {n++} END {print n+0}' "$BUNDLE" 2>/dev/null || echo 0
+	printf 'TUN available: '; if [ -c /dev/net/tun ]; then echo yes; else echo no; fi
+	awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {print $1, $2, "kB"}' /proc/meminfo 2>/dev/null || true
+	echo 'Known network services:'
+	for service in nikki openclash sing-box xray pbr mwan3 AdGuardHome nfqws; do
+		if installed "$service" || running_p "$service"; then echo "  $service"; fi
+	done
+	echo 'Recent engine event categories (details omitted):'
+	tail -n 300 "$LOG" 2>/dev/null | awk '
+	{ line=tolower($0)
+	  if (line ~ /auth|unauthorized|forbidden/) print "  authentication"
+	  else if (line ~ /certificate|tls|handshake/) print "  TLS/handshake"
+	  else if (line ~ /timeout|timed out/) print "  timeout"
+	  else if (line ~ /dns|resolv/) print "  DNS"
+	  else if (line ~ /disconnect|closed|reset/) print "  disconnected"
+	  else if (line ~ /connected|подключено/) print "  connected"
+	  else if (line ~ /error|failed|panic/) print "  engine error"
+	}' || true
+	echo 'Send this TXT report to your administrator.'
+}
+
 cmd_doctor() {
 	doctor_scan
 	printf '%s' "$D_FIND" | while IFS='|' read -r lvl txt; do
@@ -1837,6 +1874,7 @@ case "${1:-}" in
 	        *) cmd_json "${2:-}" ;;
 	        esac ;;
 	doctor) cmd_doctor "${2:-}" ;;
+	report) cmd_report ;;
 	nikki)  cmd_nikki "${2:-status}" ;;
 	log)    tail -n "${2:-100}" "$LOG" 2>/dev/null | sed 's/\(password[^,;]*[=:]\)[^,;]*/\1 …/I' || true ;;
 	cleanup) dns_apply off; devices_apply off; firewall off; rm -f "$RUN/active" "$TOML" "$LOG"; echo "DNS и фаервол возвращены как были" ;;

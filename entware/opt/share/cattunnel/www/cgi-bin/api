@@ -62,7 +62,7 @@ case "$(param action)" in
 			*/cattunnel)
 				ok=0
 				case "${1:-}|${2:-}" in
-					"json|status"|"json|servers"|"json|leases"|"json|doctor"|"json|direct"|"mihomo|"|"test|"|"update|"|"status|"|"upgrade|"|"upgrade|check") ok=1 ;;
+					"report|"|"json|status"|"json|servers"|"json|leases"|"json|doctor"|"json|direct"|"mihomo|"|"test|"|"update|"|"status|"|"upgrade|"|"upgrade|check") ok=1 ;;
 					"log|"*|"import|"*|"use|"*|"set|"*|"direct|"*) ok=1 ;;
 					"nikki|status"|"nikki|on"|"nikki|off"|"firewall|on"|"firewall|off"|"dns|on"|"dns|off"|"doctor|--apply") ok=1 ;;
 					"devices|on"|"devices|off"|"devices|status"|"ru|status"|"ru|update"|"web|status"|"web|password") ok=1 ;;

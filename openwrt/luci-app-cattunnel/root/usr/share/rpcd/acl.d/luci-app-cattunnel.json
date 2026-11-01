@@ -29,6 +29,9 @@
 				],
 				"/usr/bin/cattunnel json direct": [
 					"exec"
+				],
+				"/usr/bin/cattunnel report": [
+					"exec"
 				]
 			}
 		},
