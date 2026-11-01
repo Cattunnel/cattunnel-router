@@ -112,7 +112,7 @@ esac
         source = source.replace('/usr/share/cattunnel', str(share))
         for path in ('/etc/openwrt_release', '/etc/ndm', '/tmp/sysinfo/model',
                      '/proc/device-tree/model', '/sys/firmware/devicetree/base/model',
-                     '/proc/cpuinfo'):
+                     '/proc/cpuinfo', '/etc/version'):
             source = source.replace(path, str(self.base / path.lstrip('/')))
         self.script.write_text(source)
         self.env = dict(os.environ, CATTUNNEL_ETC=str(self.etc),
@@ -174,11 +174,33 @@ esac
         self.assertEqual(headers.get('x-app-version'), 'cattunnel-router/1.5.7')
         self.assertEqual(headers.get('x-device-os'), 'entware')
         self.assertTrue(headers.get('x-device-model'))
+        self.assertRegex(headers.get('x-hwid', ''), r'^[0-9a-f]{32}$')
+        self.assertTrue(headers.get('x-ver-os'))
+        hwid = headers['x-hwid']
         key = self.etc / 'device.key'
         before = key.read_bytes(), key.stat().st_ino
         self.assertEqual(key.stat().st_mode & 0o777, 0o600)
         self.updated()
         self.assertEqual((key.read_bytes(), key.stat().st_ino), before)
+        self.assertEqual({k.lower(): v for k, v in self.requests[-1][1].items()}['x-hwid'], hwid)
+
+    def test_hwid_is_random_per_install_and_private(self):
+        self.updated()
+        identity = self.etc / 'device.id'
+        before = identity.read_text()
+        self.assertEqual(identity.stat().st_mode & 0o777, 0o600)
+        identity.unlink()
+        self.updated()
+        self.assertNotEqual(identity.read_text(), before)
+        self.assertRegex(identity.read_text(), r'^[0-9a-f]{32}$')
+
+    def test_corrupt_hwid_is_not_rotated_or_sent(self):
+        # x-hwid is optional: a broken device.id must not stop the subscription update.
+        (self.etc / 'device.id').write_text('broken\n')
+        self.updated()
+        self.assertEqual((self.etc / 'device.id').read_text(), 'broken\n')
+        self.assertTrue(self.requests)
+        self.assertNotIn('broken', ''.join(str(r) for r in self.requests))
 
     def test_import_creates_device_identity_and_keeps_legacy_key(self):
         self.updated('import', f'{self.url}/sub', self.legacy)
@@ -246,18 +268,21 @@ esac
         model.parent.mkdir(parents=True)
         model.write_bytes(b'Test Router\r\nx-injected: bad\x00')
         release = self.base / 'etc/openwrt_release'
-        release.touch()
+        release.write_text("DISTRIB_RELEASE='24.10.0'\n")
         self.updated()
         headers = {k.lower(): v for k, v in self.requests[-1][1].items()}
         self.assertEqual(headers.get('x-device-os'), 'openwrt')
         self.assertIn('Test Router', headers.get('x-device-model', ''))
         self.assertNotIn('x-injected', headers)
+        self.assertEqual(headers.get('x-ver-os'), '24.10.0')
 
     def test_keenetic_metadata(self):
         (self.base / 'etc/ndm').mkdir()
+        (self.base / 'etc/version').write_text('4.3.2\n')
         self.updated()
         headers = {k.lower(): v for k, v in self.requests[-1][1].items()}
         self.assertEqual(headers.get('x-device-os'), 'keenetic')
+        self.assertEqual(headers.get('x-ver-os'), '4.3.2')
 
     def test_valid_device_response_ignores_damaged_legacy_key(self):
         (self.etc / 'age.key').write_text('damaged legacy identity\n')

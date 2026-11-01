@@ -257,6 +257,33 @@ device_identity() {  # отдельная постоянная identity роут
 	}
 }
 
+device_hwid() {  # random persistent ID, published atomically like device.key
+	if [ ! -e "$ETC/device.id" ]; then
+		dh_tmp=$(mktemp "$ETC/device.id.XXXXXX") || return 1
+		od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$dh_tmp"
+		if ! grep -Eq '^[0-9a-f]{32}$' "$dh_tmp"; then rm -f "$dh_tmp"; return 1; fi
+		if ! ln "$dh_tmp" "$ETC/device.id" 2>/dev/null && [ ! -e "$ETC/device.id" ]; then
+			rm -f "$dh_tmp"; return 1
+		fi
+		rm -f "$dh_tmp"
+	fi
+	grep -Eq '^[0-9a-f]{32}$' "$ETC/device.id" || return 1
+	cat "$ETC/device.id"
+}
+
+device_os_version() {
+	(
+		if [ -f /etc/openwrt_release ]; then
+			# Read data, never source a firmware file as shell code.
+			dv=$(sed -n "s/^DISTRIB_RELEASE=['\"]*\([^'\"]*\)['\"]*$/\1/p" /etc/openwrt_release)
+			[ -z "$dv" ] || { printf '%s' "$dv"; exit; }
+		elif [ -f /etc/version ]; then
+			head -n 1 /etc/version; exit
+		fi
+		uname -r
+	) | LC_ALL=C tr -cd ' -~' | cut -c 1-64
+}
+
 device_os() {
 	if [ -f /etc/openwrt_release ]; then echo openwrt
 	elif [ -d /etc/ndm ]; then echo keenetic
@@ -275,8 +302,10 @@ device_model() {  # без hostname/серийного номера; тольк�
 
 fetch_one() {  # url -> $RUN/sub.new (расшифрованный), 0 если похоже на подписку
 	ca_build
+	hwid=$(device_hwid) || hwid=""  # optional header: a missing ID must not stop the subscription update
 	curl -fsS ${CA_OPT:-} --connect-timeout 7 --max-time 40 \
 		-H "x-device-key: $DEVICE_PUBLIC_KEY" \
+		-H "x-hwid: $hwid" -H "x-ver-os: $(device_os_version)" \
 		-H "x-app-version: cattunnel-router/$(pkg_version)" \
 		-H "x-device-os: $(device_os)" -H "x-device-model: $(device_model)" \
 		-o "$RUN/sub.raw" "$1" || return 1
