@@ -128,7 +128,11 @@ for A in $ARCHES; do
 				target=/opt
 			fi
 			free=\$(df -k "\$target" 2>/dev/null | awk 'NR==2 {print \$4}')
-			[ -z "\$free" ] || [ "\$free" -ge $need_kb ] || fail "мало места в \$target: свободно \$((free / 1024)) МБ, нужно \$(($need_kb / 1024)) МБ (на OpenWrt — extroot на флешку)"
+			# обновление: старая версия освободит своё место (так же считает install.sh)
+			need=$need_kb
+			if [ "\$flavor" = openwrt ]; then lib=/usr/libexec/cattunnel; else lib=/opt/libexec/cattunnel; fi
+			old_kb=\$(du -sk "\$lib" 2>/dev/null | cut -f1); [ -n "\$old_kb" ] && need=\$((need - old_kb))
+			[ -z "\$free" ] || [ "\$free" -ge "\$need" ] || fail "мало места в \$target: свободно \$((free / 1024)) МБ, нужно \$((need / 1024 + 1)) МБ (на OpenWrt — extroot на флешку)"
 			mem=\$(awk '/^MemTotal:/ {print int(\$2 / 1024)}' /proc/meminfo)
 			[ "\${mem:-0}" -ge 60 ] || fail "мало памяти: \${mem} МБ, нужно от 64 МБ"
 			kv=\$(uname -r | awk -F. '{print \$1 * 100 + \$2}')

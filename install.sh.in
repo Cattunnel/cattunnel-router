@@ -282,7 +282,11 @@ if [ -f "${TARGET%/}/etc/cattunnel/WRONG_ARCH" ] || [ -f /etc/cattunnel/WRONG_AR
 	rm -f /etc/cattunnel/WRONG_ARCH /opt/etc/cattunnel/WRONG_ARCH
 	fail "установка не удалась (код $rc); пришлите нам вывод: sh install.sh --check; uname -a"
 fi
-[ $rc = 0 ] || warn "$PM вернул код $rc, но движок запускается — продолжаю"
+if [ $rc != 0 ]; then
+	now=$(installed_ver cattunnel)
+	[ "$now" = "$WANT" ] || fail "$PM не поставил $PKG (код $rc), осталась версия ${now:-никакая}; причина — в выводе выше"
+	warn "$PM вернул код $rc, но $WANT стоит и движок запускается — продолжаю"
+fi
 ok "движок: $("$LIB/trusttunnel_client" --version 2>/dev/null | head -n 1)"
 
 if [ -n "$LUCI_PKG" ]; then

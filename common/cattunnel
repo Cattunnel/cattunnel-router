@@ -822,7 +822,12 @@ cmd_upgrade() {  # check | (без аргумента) поставить
 		       v=$(cut -d' ' -f3 "$ETC/upgrade.state"); m=$(cat "$RUN/upgrade/mirror")
 		       cp "$RUN/upgrade/install.sh" "$ETC/upgrade-install.sh"
 		       # отдельным процессом: установщик остановит и заменит этот самый cattunnel (и страницу, с которой нажали)
-		       nohup sh "$ETC/upgrade-install.sh" --from "$m" > "$ETC/upgrade.log" 2>&1 &
+		       # nohup есть не везде (в Entware на Keenetic его нет): тогда тот же отрыв от сессии через trap
+		       if command -v nohup >/dev/null 2>&1; then
+		           nohup sh "$ETC/upgrade-install.sh" --from "$m" > "$ETC/upgrade.log" 2>&1 &
+		       else
+		           ( trap '' HUP; exec sh "$ETC/upgrade-install.sh" --from "$m" ) < /dev/null > "$ETC/upgrade.log" 2>&1 &
+		       fi
 		       echo "ставлю версию $v (было $(pkg_version)); ход — в $ETC/upgrade.log, туннель перезапустится сам" ;;
 		*) die "cattunnel upgrade [check]" ;;
 	esac
