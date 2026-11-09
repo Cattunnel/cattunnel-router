@@ -17,8 +17,8 @@ function subSummary(sub) {
 
 const KEYS = [ 'tls', 'dpi', 'padding', 'quic' ];
 
-/* откуда берётся каждое значение: своё у сервера > «для всех» (g — ovr_* из status) > подписка;
-   «sub» у сервера — явное «как в подписке», это не своё значение */
+/* откуда берётся каждое значение: своё у сервера > «для всех» (g - ovr_* из status) > подписка;
+   «sub» у сервера - явное «как в подписке», это не своё значение */
 function source(o, g) {
 	if (KEYS.some((k) => o[k] && o[k] !== 'sub')) return 'own';
 	return KEYS.some((k) => !o[k] && g['ovr_' + k]) ? 'all' : 'sub';
@@ -43,9 +43,9 @@ return view.extend({
 		return this.load().then((d) => dom.content(this.box, this.table(d)));
 	},
 
-	/* окно «Настройки сервера» — как страница ключа в приложении */
+	/* окно «Настройки сервера» - как страница ключа в приложении */
 	openSettings(s) {
-		/* в подписях — что именно сейчас будет: «как в подписке (Chrome)» */
+		/* в подписях - что именно сейчас будет: «как в подписке (Chrome)» */
 		const inh = (sub) => [ [ '', 'как для всех серверов' ], [ 'sub', 'как в подписке (' + sub + ')' ] ];
 		const o = s.ovr, su = s.sub || {};
 		const tls = select(o.tls, inh(TLS[su.tls] || su.tls || 'Chrome').concat(Object.entries(TLS)));
@@ -77,9 +77,9 @@ return view.extend({
 			E('p', {}, [ s.address, E('br'), E('small', {}, 'В подписке: ' + subSummary(s.sub)) ]),
 			E('div', { 'class': 'cbi-section' }, [
 				field('Отпечаток TLS', tls),
-				field('Анти-DPI', dpi, 'Сервер работает и так — оставьте «как в подписке». Не подключается — попробуйте «авто».'),
+				field('Анти-DPI', dpi, 'Сервер работает и так - оставьте «как в подписке». Не подключается - попробуйте «авто».'),
 				desyncRow,
-				field('Маскировка размеров', pad, 'Первые пакеты соединения у туннеля всегда одного размера — по этому рисунку фильтр может узнать VPN, даже не видя содержимого. Маскировка добавляет в первые кадры случайный мусор, и размеры каждый раз разные. Обычно хватает 8 (так в подписке); больше — почти без пользы.'),
+				field('Маскировка размеров', pad, 'Первые пакеты соединения у туннеля всегда одного размера - по этому рисунку фильтр может узнать VPN, даже не видя содержимого. Маскировка добавляет в первые кадры случайный мусор, и размеры каждый раз разные. Обычно хватает 8 (так в подписке); больше - почти без пользы.'),
 				field('QUIC', quic)
 			]),
 			E('div', { 'class': 'right' }, [
@@ -92,7 +92,7 @@ return view.extend({
 	table([ list, g ]) {
 		g = g || {};
 		if (!list || !list.length)
-			return E('p', {}, 'Серверов нет — сначала подписка («Настройки»).');
+			return E('p', {}, 'Серверов нет - сначала подписка («Настройки»).');
 		return E('table', { 'class': 'table' }, [
 			E('tr', { 'class': 'tr table-titles' }, [
 				E('th', { 'class': 'th' }, 'Сервер'), E('th', { 'class': 'th' }, 'Адрес'),
@@ -100,7 +100,7 @@ return view.extend({
 			])
 		].concat(list.map((s) => E('tr', { 'class': 'tr' }, [
 			E('td', { 'class': 'td' }, s.selected ? E('strong', {}, '★ ' + s.name) : s.name),
-			E('td', { 'class': 'td' }, s.address || '—'),
+			E('td', { 'class': 'td' }, s.address || '-'),
 			E('td', { 'class': 'td' }, { own: E('em', {}, 'свои'), all: 'как для всех серверов', sub: 'как в подписке' }[source(s.ovr, g)]),
 			E('td', { 'class': 'td right' }, [
 				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, () => this.openSettings(s)) }, 'Настройки'), ' ',
@@ -118,7 +118,7 @@ return view.extend({
 		this.box = E('div', { 'class': 'cbi-section' }, this.table(data));
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, 'Серверы'),
-			E('div', { 'class': 'cbi-map-descr' }, 'Список приходит из подписки и обновляется сам каждые 6 часов. «Настройки» — свой отпечаток, анти-DPI, маскировка и QUIC для этого сервера, поверх подписки.'),
+			E('div', { 'class': 'cbi-map-descr' }, 'Список приходит из подписки и обновляется сам каждые 6 часов. «Настройки» - свой отпечаток, анти-DPI, маскировка и QUIC для этого сервера, поверх подписки.'),
 			this.box,
 			E('div', { 'class': 'cbi-page-actions', 'style': 'text-align:left' }, [
 				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, () =>

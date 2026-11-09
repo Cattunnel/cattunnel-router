@@ -1,25 +1,25 @@
 #!/bin/sh
 # CatTunnel для роутеров: одна команда на OpenWrt (procd), Keenetic и ASUS Merlin (Entware).
-# Только busybox sh, curl и age. Ядро — наш trusttunnel_client (статический musl).
+# Только busybox sh, curl и age. Ядро - наш trusttunnel_client (статический musl).
 #
 #   cattunnel import <ссылка подписки> [age-ключ]   ключ AGE-SECRET-KEY-... (или из stdin);
 #                                       ссылок можно несколько через « | », как в приложении
 #   cattunnel update                    скачать подписку (?format=router), с зеркал при сбое
-#   cattunnel list                      серверы из подписки, * — выбранный
+#   cattunnel list                      серверы из подписки, * - выбранный
 #   cattunnel use <ключ сервера>        выбрать сервер (de, nl, us, ...)
 #   cattunnel set <ИМЯ> <значение>      MODE=socks|tun, SOCKS=127.0.0.1:1080, TUN_DEV, LOGLEVEL,
 #                                       FAILOVER=on|off (сам переходить на следующий сервер),
 #                                       KILLSWITCH=on|off, MTU (tun), RU_DIRECT=on|off (tun: российское
 #                                       мимо туннеля), DNS=router|tunnel (tun: семейный DNS из подписки),
 #                                       DEVICES='MAC или имя из DHCP ...' (tun: в туннель только эти
-#                                       устройства, остальной дом — напрямую; пусто — весь дом;
+#                                       устройства, остальной дом - напрямую; пусто - весь дом;
 #                                       туннель поднимается, когда они появились, и гаснет через
-#                                       IDLE_STOP секунд тишины, 600; 0 — держать всегда);
-#                                       для экспертов, поверх подписки (пусто — как в подписке):
+#                                       IDLE_STOP секунд тишины, 600; 0 - держать всегда);
+#                                       для экспертов, поверх подписки (пусто - как в подписке):
 #                                       OVR_TLS=chrome|firefox|safari|okhttp, OVR_DPI=off|1|2|3|auto|custom,
 #                                       OVR_DESYNC='-o1+s -d3+s', OVR_PADDING=0..64, OVR_QUIC=on|off;
-#                                       для одного сервера — SRV_<ключ>_TLS|DPI|DESYNC|PADDING|QUIC
-#                                       (пусто — как «для всех», sub — как в подписке).
+#                                       для одного сервера - SRV_<ключ>_TLS|DPI|DESYNC|PADDING|QUIC
+#                                       (пусто - как «для всех», sub - как в подписке).
 #                                       Пар можно несколько: cattunnel set A 1 B 2
 #   cattunnel run                       движок на переднем плане (procd / init.d зовут это)
 #   cattunnel start|stop|restart|status фоном, для Entware без procd
@@ -33,25 +33,25 @@
 #   cattunnel report                    обезличенный отчёт TXT для администратора
 #   cattunnel doctor [--apply]          найти другие VPN/прокси/DNS-службы, конфликты; предложить
 #                                       настройки, которые встраиваются в существующую схему
-#                                       (--apply — применить их); json doctor — для LuCI
+#                                       (--apply - применить их); json doctor - для LuCI
 #   cattunnel nikki on|off|status       встроиться в nikki (mihomo) как родной: прокси CatTunnel,
 #                                       группа CatTunnel-VPN (CatTunnel → ваш VLESS), DIRECT для
-#                                       туннеля — через mixin nikki; CatTunnel-VPN первым в селекторы
+#                                       туннеля - через mixin nikki; CatTunnel-VPN первым в селекторы
 #                                       профиля и выбрана в них через API mihomo (off возвращает
-#                                       прежний выбор); не поднялся nikki — всё откатывается само
+#                                       прежний выбор); не поднялся nikki - всё откатывается само
 #   cattunnel devices on|off|status     DEVICES: поставить/снять правила (сторож делает это сам)
 #   cattunnel direct list|add|del|set|clear  свои сайты и IP напрямую, мимо туннеля (режим tun), как в приложении
 #   cattunnel upgrade [check]           обновить пакет (install.sh с зеркал, подпись Ed25519 проверяется); сам проверяет раз в сутки
 #   cattunnel autostart on|off|status    запуск при загрузке роутера (переживает переустановку пакета)
-#   cattunnel web password <пароль>     Keenetic/Merlin: своя веб-страница (на OpenWrt — LuCI);
+#   cattunnel web password <пароль>     Keenetic/Merlin: своя веб-страница (на OpenWrt - LuCI);
 #   cattunnel web on [порт]|off|status  только на домашнем адресе роутера, вход по паролю (admin)
 #   cattunnel ru update|status          российские сети для RU_DIRECT (geoip:ru, сами раз в 20 ч)
-#   cattunnel firewall on|off           для tun: пустить LAN в туннель (OpenWrt — зона fw4,
-#                                       Keenetic/Merlin — правила iptables, ставятся при run)
+#   cattunnel firewall on|off           для tun: пустить LAN в туннель (OpenWrt - зона fw4,
+#                                       Keenetic/Merlin - правила iptables, ставятся при run)
 #
 # Режимы:
-#   socks — SOCKS5 на $SOCKS (127.0.0.1:1080), UDP тоже. Для mihomo/nikki: proxy type socks5.
-#   tun   — устройство $TUN_DEV, движок ставит маршруты; LAN заворачивает фаервол
+#   socks - SOCKS5 на $SOCKS (127.0.0.1:1080), UDP тоже. Для mihomo/nikki: proxy type socks5.
+#   tun   - устройство $TUN_DEV, движок ставит маршруты; LAN заворачивает фаервол
 #           (OpenWrt: зона cattunnel из пакета; Keenetic/Merlin: netfilter-хук).
 set -eu
 
@@ -68,6 +68,7 @@ ENGINE=$LIB/trusttunnel_client
 # российские сети/домены для RU_DIRECT: встроенные (пакет) + скачанные (ru.cidr, раз в 20 ч)
 case "$LIB" in /opt/*) SHARE=/opt/usr/share/cattunnel ;; *) SHARE=/usr/share/cattunnel ;; esac
 RU_BASE=$SHARE/ru_services.txt
+[ ! -f "$SHARE/upgrade.sh" ] || . "$SHARE/upgrade.sh"
 AGE=$LIB/age
 [ -x "$AGE" ] || AGE=$(command -v age 2>/dev/null || echo "$LIB/age")
 AGE_KEYGEN=$LIB/age-keygen
@@ -78,7 +79,7 @@ KEY=$ETC/age.key
 DEVICE_KEY=$ETC/device.key
 TOML=$RUN/client.toml
 LOG=$RUN/engine.log
-LOG_MAX_KB=256     # журнал движка в tmpfs (это ОЗУ роутера) — не больше этого
+LOG_MAX_KB=256     # журнал движка в tmpfs (это ОЗУ роутера) - не больше этого
 PIDF=$RUN/cattunnel.pid
 TEST_URL=http://connectivitycheck.gstatic.com/generate_204
 RU_LIST_MAX_AGE_MIN=1200   # обновлять российские сети раз в 20 часов (как приложение)
@@ -98,8 +99,8 @@ RU_DIRECT=on
 DNS=router
 WEB=off            # Keenetic/Merlin: веб-страница CatTunnel (cattunnel web on)
 WEB_PORT=8090
-IDLE_STOP=600      # DEVICES: устройства молчат столько секунд — туннель гасится до их появления (0 — держать всегда)
-DEVICES=""         # tun: только эти устройства (MAC / имя из DHCP) через туннель; пусто — весь LAN
+IDLE_STOP=600      # DEVICES: устройства молчат столько секунд - туннель гасится до их появления (0 - держать всегда)
+DEVICES=""         # tun: только эти устройства (MAC / имя из DHCP) через туннель; пусто - весь LAN
 DEV_TABLE=218      # таблица маршрутов для DEVICES (busybox ip: номер до 255)
 DEV_MARK=0x1801    # метка пакетов этих устройств
 DEV_PREF=1801      # приоритет правила ip rule
@@ -109,13 +110,13 @@ OVR_DESYNC=""
 OVR_PADDING=""
 OVR_QUIC=""
 CHECK_EVERY=30     # проверка туннеля, с
-CHECK_FAILS=4      # столько провалов подряд — сервер считается недоступным (2 мин)
+CHECK_FAILS=4      # столько провалов подряд - сервер считается недоступным (2 мин)
 BACK_AFTER=1800    # на запасном сервере: через столько секунд попробовать вернуться на выбранный
 UPDATE_EVERY=21600 # обновлять подписку (и зеркала) раз в 6 часов, не прерывая туннель
 umask 077
 mkdir -p "$ETC" "$RUN"
 # Настройки читаем, а не исполняем: только строки ИМЯ='значение' (без кавычек внутри),
-# мусор (ручная правка, битая флешка) пропускается — скрипт не падает и не уходит в цикл.
+# мусор (ручная правка, битая флешка) пропускается - скрипт не падает и не уходит в цикл.
 if [ -f "$SETTINGS" ]; then
 	while IFS= read -r line || [ -n "$line" ]; do
 		case "$line" in
@@ -150,7 +151,7 @@ save_setting() {  # name value
 	esac
 	case "$2" in *"'"*|*'
 '*) die "недопустимое значение" ;; esac
-	# Для сервера проверяем значение как у общей настройки; «sub» — как в подписке.
+	# Для сервера проверяем значение как у общей настройки; «sub» - как в подписке.
 	case "$1" in SRV_*) [ "$2" = sub ] || ( save_check "OVR_${1##*_}" "$2" ) || exit 1 ;; *) save_check "$1" "$2" ;; esac
 	touch "$SETTINGS"
 	grep -v "^$1=" "$SETTINGS" > "$SETTINGS.new" || true
@@ -159,7 +160,7 @@ save_setting() {  # name value
 	eval "$1=\$2"
 }
 
-save_check() {  # name value — допустимо ли значение
+save_check() {  # name value - допустимо ли значение
 	case "$1" in
 		SOCKS)
 			printf '%s' "$2" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$' || die "SOCKS: нужен адрес вида 127.0.0.1:1080"
@@ -168,8 +169,8 @@ save_check() {  # name value — допустимо ли значение
 		SUB_URL) printf '%s' "$2" | grep -Eq '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%| -]+$' || die "ссылка подписки: недопустимые символы"
 			case "$2" in *'"'*|*'\\'*|*'`'*) die "ссылка подписки: недопустимые символы" ;; esac ;;
 		SERVER) printf '%s' "$2" | grep -Eq '^[A-Za-z0-9_-]{1,32}$' || die "SERVER: недопустимый ключ" ;;
-		DEVICES) [ -z "$2" ] || { [ ${#2} -le 512 ] && printf '%s\n' "$2" | grep -Eq '^[0-9A-Za-z:._ *-]*$'; } || die "DEVICES: MAC-адреса или имена устройств через пробел (начало имени — со «*»: S22*)"
-			for d in $2; do case "$d" in *:*) printf '%s' "$d" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || die "DEVICES: «$d» — не MAC-адрес" ;; esac; done ;;
+		DEVICES) [ -z "$2" ] || { [ ${#2} -le 512 ] && printf '%s\n' "$2" | grep -Eq '^[0-9A-Za-z:._ *-]*$'; } || die "DEVICES: MAC-адреса или имена устройств через пробел (начало имени - со «*»: S22*)"
+			for d in $2; do case "$d" in *:*) printf '%s' "$d" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || die "DEVICES: «$d» - не MAC-адрес" ;; esac; done ;;
 		OVR_DESYNC|SRV_*_DESYNC) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[-+0-9a-z ]{1,64}$' || die "своя строка: только -s/-o/-d, числа, +s/+h" ;;
 	esac
 	case "$1=$2" in
@@ -206,8 +207,8 @@ b64url_decode() {  # base64url -> текст; на чистом awk (в busybox 
 CA_SYS="/etc/ssl/cert.pem /etc/pki/tls/cert.pem /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt /opt/etc/ssl/cert.pem /opt/etc/ssl/certs/ca-certificates.crt"
 CA_OPT=""
 ca_build() {  # $ETC/ca.pem: системные корневые сертификаты БЕЗ российских госцентров (Russian Trusted Root/Sub CA,
-	# Минцифры). Им доверяют банки, но ими же можно подменить сертификат сервера — для туннеля и подписки не нужны.
-	# Движок берёт набор из SSL_CERT_FILE, curl — из --cacert. Лежит в $ETC: пересобирается, только когда обновился системный. Без openssl: сертификат раскодируем в awk и ищем имя.
+	# Минцифры). Им доверяют банки, но ими же можно подменить сертификат сервера - для туннеля и подписки не нужны.
+	# Движок берёт набор из SSL_CERT_FILE, curl - из --cacert. Лежит в $ETC: пересобирается, только когда обновился системный. Без openssl: сертификат раскодируем в awk и ищем имя.
 	src=""; for f in $CA_SYS; do [ -s "$f" ] && { src=$f; break; }; done
 	[ -n "$src" ] || return 0
 	[ -s "$ETC/ca.pem" ] && [ "$ETC/ca.pem" -nt "$src" ] && { CA_OPT="--cacert $ETC/ca.pem"; return 0; }
@@ -217,7 +218,7 @@ ca_build() {  # $ETC/ca.pem: системные корневые сертифи�
 	inb { pem = pem $0 "\n" }
 	inb && /-----END CERTIFICATE-----/ {
 		inb = 0; txt = ""; bits = 0; n = 0
-		# имя издателя и владельца — в начале сертификата: хватает первых ~600 байт (800 символов base64)
+		# имя издателя и владельца - в начале сертификата: хватает первых ~600 байт (800 символов base64)
 		lim = length(b64); if (lim > 800) lim = 800
 		for (i = 1; i <= lim; i++) {
 			c = substr(b64, i, 1); if (!(c in v)) continue
@@ -327,7 +328,7 @@ cmd_update() {
 	[ -n "$SUB_URL" ] || die "нет подписки: cattunnel import <ссылка> <ключ>"
 	device_identity || die "обновление отменено: ключ устройства недоступен; сохранённая подписка не изменена"
 	# Сначала адреса из ссылки (их может быть несколько: «a | b»), потом зеркала из прошлой
-	# подписки — в том порядке, в каком их отдал сервер.
+	# подписки - в том порядке, в каком их отдал сервер.
 	urls=""
 	for u in $(printf '%s' "$SUB_URL" | tr '|' ' '); do
 		case "$u" in *format=router*) ;; *\?*) u="$u&format=router" ;; *) u="$u?format=router" ;; esac
@@ -356,13 +357,80 @@ cmd_update() {
 	die "подписка не скачалась ни с одного адреса"
 }
 
+url_decode() {
+	printf '%s\n' "$1" | awk '
+	BEGIN { hex = "0123456789abcdef" }
+	{ for (i=1; i<=length($0); i++) {
+	 c=substr($0,i,1)
+	 if (c == "%") {
+	  a=index(hex,tolower(substr($0,i+1,1)))-1; b=index(hex,tolower(substr($0,i+2,1)))-1
+	  if (a<0 || b<0 || a*16+b<33 || a*16+b>126) exit 1
+	  printf "%c",a*16+b; i+=2
+	 } else printf "%s",c
+	} }'
+}
+
+exchange_import() {  # <one-time URL>; persist only the permanent subscription URLs
+	ex_code=""; ex_base=""
+	case "$1" in
+		cattunnel://subscription\?*)
+			ex_query=${1#*\?}
+			while [ -n "$ex_query" ]; do
+				ex_pair=${ex_query%%&*}
+				case "$ex_pair" in code=*) ex_code=$(url_decode "${ex_pair#code=}") || die "некорректный код" ;;
+					base=*) ex_base=$(url_decode "${ex_pair#base=}") || die "некорректный адрес обмена" ;; esac
+				case "$ex_query" in *'&'*) ex_query=${ex_query#*&} ;; *) break ;; esac
+			done ;;
+		https://*/api/go/*|http://*/api/go/*)
+			ex_base=${1%%/api/go/*}; ex_code=${1#*/api/go/}
+			ex_code=${ex_code%%\?*}; ex_code=${ex_code%%\#*} ;;
+		*) return 1 ;;
+	esac
+	# BusyBox grep may limit interval bounds to 255 (RE_DUP_MAX).
+	[ "${#ex_code}" -le 256 ] && printf '%s\n' "$ex_code" | grep -Eq '^[A-Za-z0-9_-]+$' || die "некорректный код одноразовой ссылки"
+	printf '%s\n' "$ex_base" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$' || die "некорректный адрес сервера обмена"
+	ex_base=${ex_base%/}
+	device_identity || die "обмен отменён: ключ устройства недоступен"
+	ca_build
+	ex_reply=$(mktemp "$RUN/exchange.XXXXXX") || die "не создать файл ответа обмена"
+	ex_status=$(curl -sS ${CA_OPT:-} --connect-timeout 7 --max-time 20 --max-filesize 65536 \
+		-H 'Content-Type: application/json' -H "x-device-key: $DEVICE_PUBLIC_KEY" \
+		--data "{\"code\":\"$ex_code\",\"device_key\":\"$DEVICE_PUBLIC_KEY\"}" \
+		-w '%{http_code}' -o "$ex_reply" "$ex_base/api/ct/exchange") || {
+		rm -f "$ex_reply"; die "не удалось связаться с сервером обмена; получите новую ссылку в боте и повторите"
+	}
+	case "$ex_status" in
+		200) ;;
+		404) rm -f "$ex_reply"; die "одноразовая ссылка не найдена; получите новую ссылку в боте" ;;
+		410) rm -f "$ex_reply"; die "одноразовая ссылка истекла или уже использована; получите новую ссылку в боте" ;;
+		400) rm -f "$ex_reply"; die "сервер отклонил код или ключ устройства; получите новую ссылку в боте" ;;
+		*) rm -f "$ex_reply"; die "ошибка сервера обмена (HTTP $ex_status); повторите позже" ;;
+	esac
+	ex_urls=$(awk -f "$SHARE/exchange.awk" "$ex_reply") || {
+		rm -f "$ex_reply"; die "сервер обмена не вернул корректную подписку"
+	}
+	rm -f "$ex_reply"
+	ex_saved=""
+	while IFS= read -r ex_url; do
+		case "$ex_url" in *"'"*|*'"'*|*'\'*|*'|'*) die "сервер обмена вернул некорректную ссылку" ;; esac
+		printf '%s\n' "$ex_url" | grep -Eq '^https?://[^[:space:]]+$' || die "сервер обмена вернул некорректную ссылку"
+		ex_saved="$ex_saved${ex_saved:+ | }$ex_url"
+	done <<-URLS
+	$ex_urls
+	URLS
+	[ -n "$ex_saved" ] || die "сервер обмена не вернул подписку"
+	save_setting SUB_URL "$ex_saved"
+	cmd_update
+}
+
 cmd_import() {
 	[ $# -ge 1 ] || die "cattunnel import <ссылка подписки> [AGE-SECRET-KEY-...]"
+	case "$1" in cattunnel://subscription\?*|https://*/api/go/*|http://*/api/go/*) exchange_import "$1"; return ;; esac
 	case "$1" in https://*|http://*) ;; *) die "ссылка должна начинаться с https://" ;; esac
 	case "$1" in *"'"*) die "в ссылке недопустимый символ" ;; esac
 	k=${2:-}
 	if [ -z "$k" ]; then
-		[ -t 0 ] && printf 'старый age-ключ пользователя (Enter — пропустить): ' >&2
+		[ -t 0 ] && printf 'старый age-ключ пользователя (Enter - пропустить): ' >&2
 		read -r k || true
 	fi
 	if [ -n "$k" ]; then
@@ -390,27 +458,31 @@ write_toml() {  # <ключ сервера> [anti_dpi_mode для «авто»]
 	[ -f "$BUNDLE" ] || die "нет подписки: cattunnel import <ссылка> <ключ>"
 	sec=$(section "$1")
 	[ -n "$sec" ] || die "сервера '$1' нет в подписке (cattunnel list)"
-	sec=$(printf '%s\n' "$sec" | apply_overrides "$1")
-	# DNS роутера ведёт в туннель — значит, адреса серверов надо знать до него: резолвим сами
-	# через DNS провайдера и отдаём движку IP (имя остаётся в hostname — для SNI и сертификата).
+	sec=$(printf '%s\n' "$sec" | apply_overrides "$1" | sed 's/^[[:space:]]*client_random[[:space:]]*=.*/client_random = ""/')
+	if ! wan_ipv6; then
+		v4_host=$(printf '%s\n' "$sec" | sed -n 's/^hostname = "\([A-Za-z0-9.-]*\)"$/\1/p')
+		sec=$(printf '%s\n' "$sec" | sed 's/^has_ipv6 = .*/has_ipv6 = false/' | resolve_addresses --ipv4 "$v4_host")
+	fi
+	# DNS роутера ведёт в туннель - значит, адреса серверов надо знать до него: резолвим сами
+	# через DNS провайдера и отдаём движку IP (имя остаётся в hostname - для SNI и сертификата).
 	# То же, если DNS роутера для туннеля не годится: прокси-менеджер в режиме fake-ip (mihomo/nikki
-	# через AdGuard отдаёт 198.18.x — движок стучится в фиктивный адрес) или DNS не отвечает.
+	# через AdGuard отдаёт 198.18.x - движок стучится в фиктивный адрес) или DNS не отвечает.
 	if { [ "$MODE" = tun ] && [ "$DNS" = tunnel ]; } || local_dns_unusable "$(printf '%s\n' "$sec" | first_host)"; then
 		sec=$(printf '%s\n' "$sec" | resolve_addresses)
 	fi
 	{
-		echo "# собрано cattunnel из подписки; не править — перезапишется"
+		echo "# собрано cattunnel из подписки; не править - перезапишется"
 		echo "loglevel = \"$LOGLEVEL\""
 		echo 'vpn_mode = "general"'
-		# Kill switch: туннель упал — соединения не уходят напрямую (иначе движок пускает их мимо,
+		# Kill switch: туннель упал - соединения не уходят напрямую (иначе движок пускает их мимо,
 		# и сторож считает, что всё работает). Выключать только осознанно: cattunnel set KILLSWITCH off.
 		echo "killswitch_enabled = $([ "$KILLSWITCH" = off ] && echo false || echo true)"
 		echo 'post_quantum_group_enabled = true'
 		if [ "$MODE" = tun ] && { [ "$RU_DIRECT" = on ] || [ -n "$(direct_entries)" ]; }; then
-			# Российское — мимо туннеля, как «Российские сервисы» в приложении: домены и СЕТИ (geoip:ru).
-			# По сетям движок пускает напрямую всё, что пришло в туннель к российскому адресу, — без DNS
+			# Российское - мимо туннеля, как «Российские сервисы» в приложении: домены и СЕТИ (geoip:ru).
+			# По сетям движок пускает напрямую всё, что пришло в туннель к российскому адресу, - без DNS
 			# (vk.com, ya.ru и т. п. через зарубежный выход не открываются). Работает и с DEVICES.
-			# Плюс свой список «сайты и IP напрямую» (cattunnel direct) — как в приложении.
+			# Плюс свой список «сайты и IP напрямую» (cattunnel direct) - как в приложении.
 			printf 'exclusions = ['
 			{ if [ "$RU_DIRECT" = on ]; then printf '%s\n' '*.ru' '*.su' '*.xn--p1ai' '*.xn--d1acj3b' '*.moscow' '*.tatar'; ru_entries; fi
 			  direct_entries; } |
@@ -493,7 +565,7 @@ cidr_minus_host() {  # <сеть/длина> <IP> -> сеть без этого 
 	}'
 }
 
-excluded_routes() {  # <секция>: локальные сети мимо туннеля; семейный DNS — через туннель
+excluded_routes() {  # <секция>: локальные сети мимо туннеля; семейный DNS - через туннель
 	out=""
 	list="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/3"
 	d=$(dns_ip "$1")
@@ -502,7 +574,7 @@ excluded_routes() {  # <секция>: локальные сети мимо ту
 			if [ "$(cidr_contains "$n" "$d")" = 1 ]; then out="$out $(cidr_minus_host "$n" "$d")"; else out="$out $n"; fi
 		done
 		list=$out
-		# DNS провайдера для российских зон — напрямую, не через туннель.
+		# DNS провайдера для российских зон - напрямую, не через туннель.
 		if [ "$RU_DIRECT" != off ]; then for w in $(wan_dns); do list="$list $w/32"; done; fi
 	fi
 	printf '%s' "$list" | awk '{ for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? ", " : ""), $i }'
@@ -516,11 +588,24 @@ cidr_contains() {  # <сеть/длина> <IP> -> 1/0
 
 RU_ZONES="ru/su/xn--p1ai/xn--d1acj3b/moscow/tatar"
 
-wan_dns() {  # DNS провайдера (IPv4), как их выдал WAN
+wan_dns() {  # OpenWrt WAN resolvers or Keenetic name-server configuration
 	f=/tmp/resolv.conf.d/resolv.conf.auto
-	[ -f "$f" ] || f=/etc/resolv.conf
-	sed -n 's/^nameserver \([0-9][0-9.]*\)$/\1/p' "$f" | grep -v '^127\.' | head -n 4
+	if [ -f "$f" ]; then
+		sed -n 's/^nameserver \([0-9][0-9.]*\)$/\1/p' "$f" | grep -v '^127\.' | head -n 4
+		return 0
+	fi
+	wd_ndmc=$(command -v ndmc 2>/dev/null || { [ ! -x /bin/ndmc ] || echo /bin/ndmc; })
+	if [ -n "$wd_ndmc" ]; then
+		wd_servers=$("$wd_ndmc" -c 'show ip name-server' 2>/dev/null | awk '$1 == "address:" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $2 !~ /^127\./ { if (!seen[$2]++) print $2 }' | head -n 4)
+		if [ -n "$wd_servers" ]; then printf '%s\n' "$wd_servers"; return 0; fi
+		# Keenetic dns-proxy on loopback remains usable before the tunnel starts.
+		sed -n 's/^nameserver \([0-9][0-9.]*\)$/\1/p' /etc/resolv.conf | head -n 4
+	else
+		sed -n 's/^nameserver \([0-9][0-9.]*\)$/\1/p' /etc/resolv.conf | grep -v '^127\.' | head -n 4
+	fi
 }
+
+wan_ipv6() { ip -6 route show default 2>/dev/null | grep -v "dev $TUN_DEV" | grep -q '^default'; }
 
 WAN_WHY=""   # почему wan_ok сказал «нет»: для журнала ожидания
 
@@ -564,10 +649,14 @@ resolve_addresses() {  # stdin: секция; addresses = ["имя:порт", ..
 			for a in $(printf '%s' "$line" | sed 's/^addresses = \[//; s/\]$//' | tr ',' ' ' | tr -d '"'); do
 				h=${a%:*}; port=${a##*:}
 				case "$h" in
+					\[*\]) if [ "${1:-}" = --ipv4 ]; then
+						[ -n "${2:-}" ] || continue
+						ips=$(resolve4 "$2") || continue
+					else ips=$h; fi ;;
 					*[!0-9.]*) ips=$(resolve4 "$h") || { say "не разрешил $h через DNS провайдера"; ips=$h; } ;;
 					*) ips=$h ;;
 				esac
-				for ip in $ips; do out="$out${out:+, }\"$ip:$port\""; done
+				for ip in $ips; do case ", $out, " in *", \"$ip:$port\", "*) continue ;; esac; out="$out${out:+, }\"$ip:$port\""; done
 			done
 			echo "addresses = [$out]" ;;
 		*) printf '%s\n' "$line" ;;
@@ -575,12 +664,12 @@ resolve_addresses() {  # stdin: секция; addresses = ["имя:порт", ..
 	done
 }
 
-dns_apply() {  # on|off — dnsmasq спрашивает семейный DNS (через туннель); только OpenWrt
+dns_apply() {  # on|off - dnsmasq спрашивает семейный DNS (через туннель); только OpenWrt
 	[ -f /etc/openwrt_release ] || return 0
 	if [ "$1" = on ]; then
 		d=$(dns_ip "$(section "${2:-$SERVER}")")
-		[ -n "$d" ] || { say "в подписке нет DNS для туннеля — оставляю DNS роутера"; return 0; }
-		# Российские зоны — DNS провайдера (напрямую), всё остальное — семейный DNS через туннель.
+		[ -n "$d" ] || { say "в подписке нет DNS для туннеля - оставляю DNS роутера"; return 0; }
+		# Российские зоны - DNS провайдера (напрямую), всё остальное - семейный DNS через туннель.
 		wan=$(wan_dns | tr '\n' ' ')
 		mark="$d $wan"
 		[ "$(uci -q get dhcp.@dnsmasq[0].cattunnel)" = "$mark" ] && return 0
@@ -610,7 +699,7 @@ probe() {  # есть ли интернет через туннель
 	code=000
 	case "$MODE" in
 		socks) code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -x "socks5h://$SOCKS" "$TEST_URL" || true) ;;
-		tun)   # DEVICES: маршрута через tt0 в main нет — проверяем с адреса tt0 (правило from → таблица DEVICES)
+		tun)   # DEVICES: маршрута через tt0 в main нет - проверяем с адреса tt0 (правило from → таблица DEVICES)
 		       if [ -n "$DEVICES" ]; then via=$(tun_addr); else via=$TUN_DEV; fi
 		       code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 --interface "${via:-$TUN_DEV}" "$TEST_URL" || true) ;;
 	esac
@@ -638,7 +727,43 @@ trim_log() {  # обрезать журнал на месте: движок пи
 }
 
 PID=""
+rules_pending() { upgrade_pending_live "$ETC" || [ -f "$RUN/restart.pending" ]; }
+pending_token() { stat -c "%i:%Y:%Z" "$1" 2>/dev/null; cat "$1" 2>/dev/null; }
+
+release_pending_after_probe() {
+	if rules_pending && ! upgrade_lock_live "$ETC" &&
+	   [ "$(pending_token "$ETC/upgrade.pending" || true)" = "${UPGRADE_TOKEN:-}" ] &&
+	   [ "$(pending_token "$RUN/restart.pending" || true)" = "${RESTART_TOKEN:-}" ]; then
+		upgrade_guard off
+		rm -f "$ETC/upgrade.pending" "$RUN/restart.pending"
+	fi
+}
+
+hold_rules() {  # internal restart/failover: establish the barrier BEFORE killing the engine
+	[ "$KILLSWITCH" != off ] && [ -s "$BUNDLE" ] || return 0
+	[ ! -f "$RUN/stopping" ] || return 0
+	command -v upgrade_guard >/dev/null 2>&1 || die "нет модуля временной блокировки"
+	if [ "${1:-}" = --new ] || ! upgrade_pending_live "$ETC"; then
+		if [ "${1:-}" = --new ] || [ ! -f "$RUN/restart.pending" ]; then
+			echo "$$ $(date +%s)" > "$RUN/restart.pending"
+			RESTART_TOKEN=$(pending_token "$RUN/restart.pending" || true)
+		fi
+	fi
+	upgrade_guard on "$ETC" || die "не поставить временную блокировку IPv4/IPv6"
+}
+
+release_rules() {  # explicit user stop; configuration and subscription are retained
+	if [ "${1:-}" != --force ] && upgrade_pending_live "$ETC"; then return 0; fi
+	[ "${1:-}" != --force ] || rm -f "$ETC/upgrade.pending"
+	dns_apply off
+	devices_apply off
+	firewall off
+	if command -v upgrade_guard >/dev/null 2>&1; then upgrade_guard off; fi
+	rm -f "$RUN/restart.pending" "$RUN/active"
+}
+
 stop_engine() {
+	[ "${1:-}" = --idle ] || hold_rules
 	[ -n "$PID" ] || return 0
 	kill "$PID" 2>/dev/null || true
 	i=0; while kill -0 "$PID" 2>/dev/null && [ $i -lt 5 ]; do sleep 1; i=$((i + 1)); done
@@ -648,17 +773,18 @@ stop_engine() {
 }
 
 # Пауза, которую прерывает сигнал: у sh ловушка срабатывает только после текущей команды, и обычный
-# `sleep 30` держал TERM до 30 с — procd за это время добивал сторожа KILL, а его движок оставался
+# `sleep 30` держал TERM до 30 с - procd за это время добивал сторожа KILL, а его движок оставался
 # сиротой (держит порт/tt0, новый сразу падает, проверка идёт через сироту). `wait` прерывается сразу.
 nap() {
 	sleep "$1" &
 	_nap=$!
 	wait "$_nap" 2>/dev/null || true
 	kill "$_nap" 2>/dev/null || true
+	upgrade_pending_live "$ETC" || true
 }
 
 # Движки, которые не наши: после KILL сторожа, ручного `cattunnel run` в закрытом ssh и т.п. Сторож
-# один (pid-файл), так что любой движок, кроме $PID, — сирота. Гасим до запуска своего.
+# один (pid-файл), так что любой движок, кроме $PID, - сирота. Гасим до запуска своего.
 kill_strays() {
 	strays=""
 	for p in $(pgrep -f "^$ENGINE" 2>/dev/null); do [ "$p" = "$PID" ] || strays="$strays $p"; done
@@ -674,14 +800,14 @@ kill_strays() {
 	[ -d "/sys/class/net/$TUN_DEV" ] && ip link delete "$TUN_DEV" 2>/dev/null || true
 }
 
-engine_tail() {  # последние строки журнала движка — в logread, чтобы было видно, почему он упал
+engine_tail() {  # последние строки журнала движка - в logread, чтобы было видно, почему он упал
 	tail -n 3 "$LOG" 2>/dev/null | while IFS= read -r line; do say "  движок: $line"; done
 }
 
-connect() {  # <сервер>: поднять движок и дождаться интернета; 0 — работает (PID жив)
+connect() {  # <сервер>: поднять движок и дождаться интернета; 0 - работает (PID жив)
 	k=$1
 	if is_auto "$k"; then
-		# «Авто»: способы 1, 2, 3; удачный для этого сервера — первым.
+		# «Авто»: способы 1, 2, 3; удачный для этого сервера - первым.
 		modes="$(grep -x '[123]' "$ETC/auto_mode.$k" 2>/dev/null || true) 1 2 3"
 	else
 		modes="-"
@@ -702,7 +828,7 @@ connect() {  # <сервер>: поднять движок и дождаться
 		i=0
 		while [ $i -lt $((AUTO_WAIT * 2)) ] && kill -0 "$PID" 2>/dev/null; do
 			nap 1; i=$((i + 1))
-			# DEVICES: проверка идёт с адреса tt0 — его правило и маршрут нужны ДО проверки
+			# DEVICES: проверка идёт с адреса tt0 - его правило и маршрут нужны ДО проверки
 			if [ "$MODE" = tun ] && [ -n "$DEVICES" ] && [ -d "/sys/class/net/$TUN_DEV" ]; then devices_check "$k"; fi
 			if probe; then
 				[ "$m" = - ] || { echo "$m" > "$ETC/auto_mode.$k"; say "анти-DPI авто: способ $m работает ($k)"; }
@@ -711,7 +837,7 @@ connect() {  # <сервер>: поднять движок и дождаться
 			# «Авто» даёт способу 15 с, обычный сервер ждём 30 с
 			[ "$m" != - ] && [ $i -ge "$AUTO_WAIT" ] && break
 		done
-		# движок не дожил до проверки — сказать почему (иначе в журнале только «не подключился»)
+		# движок не дожил до проверки - сказать почему (иначе в журнале только «не подключился»)
 		kill -0 "$PID" 2>/dev/null || { say "$k: движок завершился через $i с"; engine_tail; }
 		stop_engine
 		[ "$m" = - ] || say "анти-DPI авто: способ $m не прошёл ($k)"
@@ -732,7 +858,7 @@ direct_valid() {  # <строка>: домен (можно *.домен), IPv4/I
 	printf '%s\n' "$1" | grep -Eq '^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$|^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$'
 }
 
-direct_entries() {  # свой список «напрямую» (cattunnel direct), по строке; комментарии и мусор — мимо
+direct_entries() {  # свой список «напрямую» (cattunnel direct), по строке; комментарии и мусор - мимо
 	[ -s "$ETC/direct.txt" ] || return 0
 	sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' "$ETC/direct.txt" | while read -r e; do
 		[ -n "$e" ] && direct_valid "$e" && printf '%s\n' "$e"
@@ -747,7 +873,7 @@ cmd_direct() {  # list | add <…> | del <…> | set <…> | clear
 	case "$a" in
 		list) direct_entries; return 0 ;;
 		add|set|del) [ "$a" = set ] || [ $# -gt 0 ] || die "cattunnel direct $a <домен или IP> ..."
-			for e in "$@"; do direct_valid "$e" || die "«$e» — не домен и не IP-адрес/сеть (пример: example.com, *.example.com, 1.2.3.4, 10.0.0.0/8)"; done ;;
+			for e in "$@"; do direct_valid "$e" || die "«$e» - не домен и не IP-адрес/сеть (пример: example.com, *.example.com, 1.2.3.4, 10.0.0.0/8)"; done ;;
 		clear) set -- ; a=set ;;
 		*) die "cattunnel direct list | add <домен|IP> ... | del <…> | set <…> | clear" ;;
 	esac
@@ -759,14 +885,14 @@ cmd_direct() {  # list | add <…> | del <…> | set <…> | clear
 	esac
 	[ "$(grep -c . "$tmp")" -le "$DIRECT_MAX" ] || { rm -f "$tmp"; die "в списке больше $DIRECT_MAX строк"; }
 	chmod 600 "$tmp"; mv "$tmp" "$ETC/direct.txt"
-	echo "напрямую: $(grep -c . "$ETC/direct.txt") — применится после перезапуска туннеля (cattunnel restart)"
+	echo "напрямую: $(grep -c . "$ETC/direct.txt") - применится после перезапуска туннеля (cattunnel restart)"
 	[ "$MODE" = tun ] || echo "внимание: список работает в режиме tun; в SOCKS5 «напрямую» решает mihomo"
 }
 
 UPGRADE_EVERY=86400   # проверять новую версию пакета раз в сутки
 pkg_version() { cat "$SHARE/VERSION" 2>/dev/null || echo "?"; }
 
-need_openssl() {  # подпись install.sh — Ed25519, в busybox её проверить нечем: нужен openssl (openssl-util, ~1 МБ)
+need_openssl() {  # подпись install.sh - Ed25519, в busybox её проверить нечем: нужен openssl (openssl-util, ~1 МБ)
 	command -v openssl >/dev/null 2>&1 && return 0
 	{ if command -v apk >/dev/null 2>&1 && [ -d /etc/apk ]; then apk add openssl-util || { apk update && apk add openssl-util; }
 	  else opkg install openssl-util || { opkg update && opkg install openssl-util; }; fi; } >/dev/null 2>&1 || true
@@ -782,7 +908,7 @@ upgrade_check() {  # скачать install.sh + подпись с зеркал,
 	for m in $(cat "$SHARE/MIRRORS" 2>/dev/null); do
 		curl -fsSL ${CA_OPT:-} --connect-timeout 10 --max-time 60 -o "$u/install.sh" "$m/install.sh" &&
 		curl -fsSL ${CA_OPT:-} --connect-timeout 10 --max-time 30 -o "$u/install.sh.sig.b64" "$m/install.sh.sig" || continue
-		# .sig — base64 (как у latest.json); подпись двоичная — декодирует openssl (awk теряет нулевые байты)
+		# .sig - base64 (как у latest.json); подпись двоичная - декодирует openssl (awk теряет нулевые байты)
 		openssl base64 -d -A -in "$u/install.sh.sig.b64" -out "$u/install.sh.sig" 2>/dev/null || continue
 		if openssl pkeyutl -verify -pubin -inkey "$SHARE/release.pub.pem" -rawin -in "$u/install.sh" -sigfile "$u/install.sh.sig" >/dev/null 2>&1; then
 			v=$(sed -n "s/^VER='\([^']*\)'$/\1/p" "$u/install.sh" | head -n 1)
@@ -791,14 +917,14 @@ upgrade_check() {  # скачать install.sh + подпись с зеркал,
 			echo "$(date +%s) $(pkg_version) $v ok" > "$ETC/upgrade.state"
 			return 0
 		fi
-		say "обновление: подпись install.sh с $m не сходится — пропускаю это зеркало"
+		say "обновление: подпись install.sh с $m не сходится - пропускаю это зеркало"
 	done
 	rm -f "$u/install.sh"
 	echo "$(date +%s) $(pkg_version) - зеркала-недоступны-или-подпись-не-сходится" > "$ETC/upgrade.state"
 	return 1
 }
 
-upgrade_available() {  # есть версия новее нашей (на зеркале другая — значит новее: туда выкладываем только вперёд)
+upgrade_available() {  # есть версия новее нашей (на зеркале другая - значит новее: туда выкладываем только вперёд)
 	set -- $(cat "$ETC/upgrade.state" 2>/dev/null)
 	[ "${4:-}" = ok ] && [ "${3:-}" != "$(pkg_version)" ] && [ "${3:-}" != - ]
 }
@@ -808,7 +934,7 @@ upgrade_maybe_check() {  # раз в сутки, тихо (в цикле сто�
 	case "$last" in *[!0-9]*) last=0 ;; esac
 	[ $(( $(date +%s) - last )) -ge "$UPGRADE_EVERY" ] || return 0
 	( upgrade_check ) >/dev/null 2>&1 || true
-	upgrade_available && say "обновление: доступна версия $(cut -d' ' -f3 "$ETC/upgrade.state") (сейчас $(pkg_version)) — cattunnel upgrade или кнопка «Обновить»"
+	upgrade_available && say "обновление: доступна версия $(cut -d' ' -f3 "$ETC/upgrade.state") (сейчас $(pkg_version)) - cattunnel upgrade или кнопка «Обновить»"
 	return 0
 }
 
@@ -822,13 +948,8 @@ cmd_upgrade() {  # check | (без аргумента) поставить
 		       v=$(cut -d' ' -f3 "$ETC/upgrade.state"); m=$(cat "$RUN/upgrade/mirror")
 		       cp "$RUN/upgrade/install.sh" "$ETC/upgrade-install.sh"
 		       # отдельным процессом: установщик остановит и заменит этот самый cattunnel (и страницу, с которой нажали)
-		       # nohup есть не везде (в Entware на Keenetic его нет): тогда тот же отрыв от сессии через trap
-		       if command -v nohup >/dev/null 2>&1; then
-		           nohup sh "$ETC/upgrade-install.sh" --from "$m" > "$ETC/upgrade.log" 2>&1 &
-		       else
-		           ( trap '' HUP; exec sh "$ETC/upgrade-install.sh" --from "$m" ) < /dev/null > "$ETC/upgrade.log" 2>&1 &
-		       fi
-		       echo "ставлю версию $v (было $(pkg_version)); ход — в $ETC/upgrade.log, туннель перезапустится сам" ;;
+		       ( trap '' HUP; exec sh "$ETC/upgrade-install.sh" --from "$m" ) < /dev/null > "$ETC/upgrade.log" 2>&1 &
+		       echo "ставлю версию $v (было $(pkg_version)); ход - в $ETC/upgrade.log, туннель перезапустится сам" ;;
 		*) die "cattunnel upgrade [check]" ;;
 	esac
 }
@@ -839,7 +960,7 @@ ru_entries() {  # встроенные домены/сети + скачанны�
 	return 0
 }
 
-ru_update() {  # скачать geoip:ru (runetfreedom; ipverse — запасной) -> $ETC/ru.cidr; 0 — обновлено
+ru_update() {  # скачать geoip:ru (runetfreedom; ipverse - запасной) -> $ETC/ru.cidr; 0 - обновлено
 	tmp=$RUN/ru.new; mkdir -p "$RUN"; : > "$tmp"
 	got=0
 	for src in \
@@ -855,13 +976,13 @@ ru_update() {  # скачать geoip:ru (runetfreedom; ipverse — запасн
 	done
 	rm -f "$tmp.part"
 	n=$(sort -u "$tmp" | tee "$tmp.u" | wc -l)
-	# мало строк — скорее всего, обрывок или заглушка провайдера: оставляем прежний список
+	# мало строк - скорее всего, обрывок или заглушка провайдера: оставляем прежний список
 	if [ "$n" -lt 1000 ]; then rm -f "$tmp" "$tmp.u"; say "российские сети: не скачались (источников $got), оставляю прежний список"; return 1; fi
 	mv "$tmp.u" "$ETC/ru.cidr"; rm -f "$tmp"
 	say "российские сети обновлены: $n (источников $got)"
 }
 
-ru_maybe_update() {  # RU_DIRECT в tun: списка нет или старше 20 ч — обновить (не вышло — едем с прежним)
+ru_maybe_update() {  # RU_DIRECT в tun: списка нет или старше 20 ч - обновить (не вышло - едем с прежним)
 	[ "$MODE" = tun ] && [ "$RU_DIRECT" = on ] || return 0
 	[ -s "$ETC/ru.cidr" ] && [ -z "$(find "$ETC/ru.cidr" -mmin +$RU_LIST_MAX_AGE_MIN 2>/dev/null)" ] && return 0
 	( ru_update ) || true
@@ -869,7 +990,7 @@ ru_maybe_update() {  # RU_DIRECT в tun: списка нет или старше
 
 tun_addr() { ip -4 addr show dev "$TUN_DEV" 2>/dev/null | awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}'; }
 
-hosts_table() {  # устройства сети: «MAC IP имя1 имя2» (имена — что сообщило устройство и что дал роутер)
+hosts_table() {  # устройства сети: «MAC IP имя1 имя2» (имена - что сообщило устройство и что дал роутер)
 	# OpenWrt / ASUS Merlin: аренды dnsmasq «срок MAC IP имя id»
 	for f in /tmp/dhcp.leases /var/lib/misc/dnsmasq.leases; do
 		[ -f "$f" ] && awk '{print tolower($2), $3, ($4 == "*" ? "-" : $4), "-"}' "$f"
@@ -890,8 +1011,8 @@ hosts_table() {  # устройства сети: «MAC IP имя1 имя2» (и
 }
 
 devices_macs() {  # DEVICES -> MAC-адреса по одному в строке. Имя (или начало имени со «*») ищется в
-	# устройствах сети при каждой проверке — так находится телефон, который меняет свой MAC
-	# («частный адрес»): имя он сообщает то же. Ещё не подключался — появится позже.
+	# устройствах сети при каждой проверке - так находится телефон, который меняет свой MAC
+	# («частный адрес»): имя он сообщает то же. Ещё не подключался - появится позже.
 	tbl=""
 	for d in $DEVICES; do
 		case "$d" in
@@ -909,7 +1030,7 @@ NDMC=$(command -v ndmc 2>/dev/null || { [ -x /bin/ndmc ] && echo /bin/ndmc; } ||
 
 LOCAL_NETS="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/3"
 
-devices_apply() {  # off | on <сервер>: только DEVICES — через туннель (метка по MAC → своя таблица)
+devices_apply() {  # off | on <сервер>: только DEVICES - через туннель (метка по MAC → своя таблица)
 	while ip rule del pref "$DEV_PREF" 2>/dev/null; do :; done
 	while ip rule del pref $((DEV_PREF + 1)) 2>/dev/null; do :; done
 	while ip -6 rule del pref "$DEV_PREF" 2>/dev/null; do :; done
@@ -936,12 +1057,12 @@ devices_apply() {  # off | on <сервер>: только DEVICES — чере�
 	ddns=""; ddns6=""
 	if [ "$DNS" = tunnel ]; then
 		ddns=$(dns_ip "$(section "$2")")
-		# DNS по IPv6 — тоже в туннель, если у сервера есть IPv6-DNS и туннель его везёт (has_ipv6 в подписке)
+		# DNS по IPv6 - тоже в туннель, если у сервера есть IPv6-DNS и туннель его везёт (has_ipv6 в подписке)
 		section "$2" | grep -q '^has_ipv6 = true' && ddns6=$(dns_ip6 "$(section "$2")")
 	fi
-	# таблица: всё — в туннель; локальные сети — обратно в main (throw); туннель пропал — blackhole
+	# таблица: всё - в туннель; локальные сети - обратно в main (throw); туннель пропал - blackhole
 	ip route add default dev "$TUN_DEV" table "$DEV_TABLE" 2>/dev/null || true
-	# IPv6 — в туннель, только если сервер дал ему IPv6-адрес; иначе сразу отказ (а не тишина в tt0):
+	# IPv6 - в туннель, только если сервер дал ему IPv6-адрес; иначе сразу отказ (а не тишина в tt0):
 	# устройство с IPv6 от провайдера мгновенно уходит на IPv4, а не висит до таймаута
 	if ip -6 addr show dev "$TUN_DEV" scope global 2>/dev/null | grep -q inet6; then
 		ip -6 route add default dev "$TUN_DEV" table "$DEV_TABLE" 2>/dev/null || true
@@ -979,7 +1100,7 @@ devices_apply() {  # off | on <сервер>: только DEVICES — чере�
 			fi
 			if [ -n "$ddns" ]; then
 				# DNS по IPv6 (роутер раздаёт свой адрес в RA), которому некуда в туннель, ушёл бы мимо
-				# подмены к DNS роутера и провайдеру — отказ, устройство сразу спросит по IPv4. DoT (853) — всегда
+				# подмены к DNS роутера и провайдеру - отказ, устройство сразу спросит по IPv4. DoT (853) - всегда
 				p6="53, 853"; [ -z "$ddns6" ] || p6="853"
 				echo "  chain dns6in { type filter hook input priority filter - 1; policy accept;"
 				echo "    meta nfproto ipv6 ether saddr @macs meta l4proto { tcp, udp } th dport { $p6 } reject; }"
@@ -989,7 +1110,7 @@ devices_apply() {  # off | on <сервер>: только DEVICES — чере�
 			echo "}"
 		} | nft -f - || say "DEVICES: nft не принял правила"
 	else
-		# счётчик «устройство ходит в интернет» (для IDLE_STOP): локальное и multicast — мимо, последнее правило считает
+		# счётчик «устройство ходит в интернет» (для IDLE_STOP): локальное и multicast - мимо, последнее правило считает
 		iptables -t mangle -N CATTUNNEL_CNT 2>/dev/null || true
 		for dn in $LOCAL_NETS 255.255.255.255/32; do iptables -t mangle -A CATTUNNEL_CNT -d "$dn" -j RETURN; done
 		iptables -t mangle -A CATTUNNEL_CNT -j RETURN
@@ -997,11 +1118,12 @@ devices_apply() {  # off | on <сервер>: только DEVICES — чере�
 		for dn in fc00::/7 fe80::/10 ff00::/8; do ip6tables -t mangle -A CATTUNNEL_CNT -d "$dn" -j RETURN 2>/dev/null || true; done
 		ip6tables -t mangle -A CATTUNNEL_CNT -j RETURN 2>/dev/null || true
 		for dt in iptables ip6tables; do
+			if [ "$dt" = ip6tables ] && ! guard_family ip6tables; then continue; fi
 			$dt -t mangle -N CATTUNNEL_DEV 2>/dev/null || true
 			for dm in $macs; do
 				$dt -t mangle -A CATTUNNEL_DEV -m mac --mac-source "$dm" -j MARK --set-mark "$DEV_MARK"
 				# метка и в conntrack: иначе fastnat Keenetic после нескольких пакетов забирает соединение
-				# и шлёт его мимо таблицы — начало в туннеле, продолжение напрямую, всё виснет (07.10)
+				# и шлёт его мимо таблицы - начало в туннеле, продолжение напрямую, всё виснет (07.10)
 				$dt -t mangle -A CATTUNNEL_DEV -m mac --mac-source "$dm" -j CONNMARK --set-mark "$DEV_MARK" 2>/dev/null || true
 				$dt -t mangle -A CATTUNNEL_DEV -m mac --mac-source "$dm" -j CATTUNNEL_CNT 2>/dev/null || true
 			done
@@ -1013,8 +1135,8 @@ devices_apply() {  # off | on <сервер>: только DEVICES — чере�
 				iptables -t nat -A CATTUNNEL_DNS -m mac --mac-source "$dm" -p "$dpr" --dport 53 -j DNAT --to-destination "$ddns"
 			done; done
 			iptables -t nat -I PREROUTING -j CATTUNNEL_DNS
-			# DNS по IPv6 (Keenetic раздаёт свой ULA-адрес как DNS): есть IPv6-DNS у сервера — туда, через туннель;
-			# нет — отказ (иначе мимо семейного DNS, к провайдеру), устройство сразу спросит по IPv4. DoT — всегда отказ
+			# DNS по IPv6 (Keenetic раздаёт свой ULA-адрес как DNS): есть IPv6-DNS у сервера - туда, через туннель;
+			# нет - отказ (иначе мимо семейного DNS, к провайдеру), устройство сразу спросит по IPv4. DoT - всегда отказ
 			p6="53 853"
 			if [ -n "$ddns6" ] && ip6tables -t nat -N CATTUNNEL_DNS 2>/dev/null; then
 				for dm in $macs; do for dpr in udp tcp; do
@@ -1038,11 +1160,11 @@ devices_rules_ok() {  # метки DEVICES на месте? (Keenetic стира
 		nft list table inet cattunnel_dev >/dev/null 2>&1
 	else
 		iptables -t mangle -C PREROUTING -j CATTUNNEL_DEV 2>/dev/null &&
-			{ ! command -v ip6tables >/dev/null 2>&1 || ip6tables -t mangle -C PREROUTING -j CATTUNNEL_DEV 2>/dev/null; }
+			{ ! guard_family ip6tables || ip6tables -t mangle -C PREROUTING -j CATTUNNEL_DEV 2>/dev/null; }
 	fi
 }
 
-devices_check() {  # <сервер>: правила на месте и список тот же? Нет — поставить заново (Keenetic
+devices_check() {  # <сервер>: правила на месте и список тот же? Нет - поставить заново (Keenetic
 	# мог перестроить правила; устройство по имени могло только что получить адрес)
 	[ -n "$DEVICES" ] || return 0
 	if ! ip rule show 2>/dev/null | grep -q "lookup $DEV_TABLE" || \
@@ -1056,20 +1178,20 @@ devices_check() {  # <сервер>: правила на месте и спис�
 	fi
 }
 
-dev_packets() {  # сколько пакетов от устройств DEVICES прошло через метку (растёт — они в сети и что-то шлют)
+dev_packets() {  # сколько пакетов от устройств DEVICES прошло через метку (растёт - они в сети и что-то шлют)
 	if command -v nft >/dev/null 2>&1 && [ -f /etc/openwrt_release ]; then
 		nft list chain inet cattunnel_dev pre 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "packets") s += $(i + 1)} END {print s + 0}'
 	else
-		# последнее правило CATTUNNEL_CNT — пакеты не в локальные сети
+		# последнее правило CATTUNNEL_CNT - пакеты не в локальные сети
 		{ iptables -t mangle -L CATTUNNEL_CNT -v -x -n 2>/dev/null | tail -n 1
 		  ip6tables -t mangle -L CATTUNNEL_CNT -v -x -n 2>/dev/null | tail -n 1; } | awk '$1 ~ /^[0-9]+$/ {s += $1} END {print s + 0}'
 	fi
 }
 
-on_demand() { [ "$MODE" = tun ] && [ -n "$DEVICES" ] && [ "${IDLE_STOP:-0}" -gt 0 ]; }
+on_demand() { ! rules_pending && [ "$MODE" = tun ] && [ -n "$DEVICES" ] && [ "${IDLE_STOP:-0}" -gt 0 ]; }
 
-wait_devices() {  # туннеля нет, пока устройства молчат: ждём их пакетов (опрос раз в 3 с — это чтение счётчика)
-	say "DEVICES: жду устройства — туннель поднимется, когда они появятся"
+wait_devices() {  # туннеля нет, пока устройства молчат: ждём их пакетов (опрос раз в 3 с - это чтение счётчика)
+	say "DEVICES: жду устройства - туннель поднимется, когда они появятся"
 	echo idle > "$RUN/state"
 	last=$(dev_packets); n=0
 	while :; do
@@ -1077,18 +1199,18 @@ wait_devices() {  # туннеля нет, пока устройства мол�
 		now=$(dev_packets)
 		[ "$now" -gt "$last" ] && break
 		last=$now
-		# устройство по имени могло получить адрес, а Keenetic — стереть метки при пересборке iptables
-		# (тогда счётчик стоит на месте и туннель не проснулся бы никогда) — переставить (без tt0 это быстро)
-		[ $((n % 600)) != 0 ] || upgrade_maybe_check   # раз в 10 мин смотрим, не пора ли (сама проверка — раз в сутки)
+		# устройство по имени могло получить адрес, а Keenetic - стереть метки при пересборке iptables
+		# (тогда счётчик стоит на месте и туннель не проснулся бы никогда) - переставить (без tt0 это быстро)
+		[ $((n % 600)) != 0 ] || upgrade_maybe_check   # раз в 10 мин смотрим, не пора ли (сама проверка - раз в сутки)
 		if [ $((n % 30)) = 0 ] && { ! devices_rules_ok || [ "$(devices_macs)" != "$(cat "$RUN/devices.on" 2>/dev/null)" ]; }; then
 			devices_apply on "$SERVER"; last=$(dev_packets)
 		fi
 	done
-	say "DEVICES: устройство в сети — поднимаю туннель"
+	say "DEVICES: устройство в сети - поднимаю туннель"
 	echo up > "$RUN/state"
 }
 
-lan_addr() {  # домашний адрес роутера (Keenetic/Merlin — br0, OpenWrt — br-lan)
+lan_addr() {  # домашний адрес роутера (Keenetic/Merlin - br0, OpenWrt - br-lan)
 	for i in br0 br-lan; do
 		a=$(ip -4 addr show dev "$i" 2>/dev/null | awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')
 		[ -n "$a" ] && { echo "$i $a"; return 0; }
@@ -1096,7 +1218,7 @@ lan_addr() {  # домашний адрес роутера (Keenetic/Merlin — 
 	return 1
 }
 
-web_fw() {  # on|off: порт страницы — только из домашней сети, только на домашний адрес
+web_fw() {  # on|off: порт страницы - только из домашней сети, только на домашний адрес
 	[ ! -f /etc/openwrt_release ] || return 0   # OpenWrt: зона lan и так пускает к роутеру
 	set -- "$1" $(lan_addr || true)
 	[ -n "${3:-}" ] || return 0
@@ -1106,14 +1228,14 @@ web_fw() {  # on|off: порт страницы — только из домаш
 }
 
 web_hash() {  # пароль -> crypt-хэш: SHA-512 (openssl passwd -6; libopenssl уже есть ради curl, openssl-util ~1 МБ),
-	# иначе MD5-crypt (busybox cryptpw умеет только md5/des). Пароль — через stdin, не в аргументах.
+	# иначе MD5-crypt (busybox cryptpw умеет только md5/des). Пароль - через stdin, не в аргументах.
 	command -v openssl >/dev/null 2>&1 || { if command -v apk >/dev/null 2>&1 && [ -d /etc/apk ]; then apk add openssl-util || { apk update && apk add openssl-util; }
 		else opkg install openssl-util || { opkg update && opkg install openssl-util; }; fi; } >/dev/null 2>&1 || true
 	if command -v openssl >/dev/null 2>&1; then
 		h=$(printf '%s\n' "$1" | openssl passwd -6 -stdin 2>/dev/null)
 		case "$h" in '$6$'*) echo "$h"; return 0 ;; esac
 	fi
-	# пароль — через дескриптор, не в аргументах (их видно в списке процессов)
+	# пароль - через дескриптор, не в аргументах (их видно в списке процессов)
 	h=$(printf '%s' "$1" | cryptpw -P 0 -m md5 2>/dev/null)
 	case "$h" in '$1$'*) echo "$h"; return 0 ;; esac
 	return 1
@@ -1140,26 +1262,26 @@ web_run() {  # start|stop
 }
 
 cmd_web() {
-	case "$LIB" in /opt/*) W=/opt/share/cattunnel/www ;; *) W=/usr/share/cattunnel/www ;; esac   # OpenWrt — тоже можно, рядом с LuCI
+	case "$LIB" in /opt/*) W=/opt/share/cattunnel/www ;; *) W=/usr/share/cattunnel/www ;; esac   # OpenWrt - тоже можно, рядом с LuCI
 	case "${1:-status}" in
 	password)
-		pw=${2:-}; [ ${#pw} -ge 8 ] || die "пароль — от 8 символов: cattunnel web password <пароль>"
+		pw=${2:-}; [ ${#pw} -ge 8 ] || die "пароль - от 8 символов: cattunnel web password <пароль>"
 		case "$pw" in *:*|*"'"*|*" "*) die "в пароле не должно быть «:», кавычек и пробелов" ;; esac
 		h=$(web_hash "$pw") || die "не смог захэшировать пароль"
 		umask 077; printf 'admin:%s\n' "$h" > "$ETC/web.users"
 		case "$h" in '$6$'*) echo "пароль задан (пользователь admin; в файле только хэш SHA-512)" ;;
-		             *) echo "пароль задан (пользователь admin; хэш MD5-crypt — нет openssl: opkg install openssl-util)" ;; esac
+		             *) echo "пароль задан (пользователь admin; хэш MD5-crypt - нет openssl: opkg install openssl-util)" ;; esac
 		[ "$WEB" != on ] || web_run start ;;
 	on)
 		[ -s "$ETC/web.users" ] || die "сначала пароль: cattunnel web password <пароль> (от 8 символов)"
 		[ -z "${2:-}" ] || { save_setting WEB_PORT "$2"; WEB_PORT=$2; }
-		# порт занят соседом (другой веб-сервер, прокси) — ближайший свободный
+		# порт занят соседом (другой веб-сервер, прокси) - ближайший свободный
 		web_run stop
 		if port_busy "$WEB_PORT"; then
 			p0=$WEB_PORT
 			for p in $(seq "$WEB_PORT" $((WEB_PORT + 9))); do port_busy "$p" || { WEB_PORT=$p; break; }; done
-			port_busy "$WEB_PORT" && die "порты $p0..$((p0 + 9)) заняты — укажите свой: cattunnel web on <порт>"
-			save_setting WEB_PORT "$WEB_PORT"; echo "порт $p0 занят другой программой — беру $WEB_PORT"
+			port_busy "$WEB_PORT" && die "порты $p0..$((p0 + 9)) заняты - укажите свой: cattunnel web on <порт>"
+			save_setting WEB_PORT "$WEB_PORT"; echo "порт $p0 занят другой программой - беру $WEB_PORT"
 		fi
 		set -- $(lan_addr) || true
 		[ -n "${2:-}" ] || die "не нашёл домашний адрес роутера (br0)"
@@ -1171,9 +1293,9 @@ cmd_web() {
 				opkg install lighttpd lighttpd-mod-cgi lighttpd-mod-auth lighttpd-mod-authn_file >/dev/null || die "не встал lighttpd (opkg)"
 			fi
 		fi
-		[ -x "$W/cgi-bin/api" ] || die "нет $W — переустановите пакет cattunnel"
+		[ -x "$W/cgi-bin/api" ] || die "нет $W - переустановите пакет cattunnel"
 		cat > "$ETC/web.conf" <<-EOC
-			# собрано cattunnel web on — не править
+			# собрано cattunnel web on - не править
 			server.modules = ( "mod_auth", "mod_authn_file", "mod_cgi" )
 			server.document-root = "$W"
 			server.bind = "$2"
@@ -1205,10 +1327,15 @@ cmd_web() {
 }
 
 firewall() {  # on|off
+	if command -v tun_guard >/dev/null 2>&1; then
+		if [ "$1" = on ] && [ "$MODE" = tun ] && [ -z "$DEVICES" ] && [ "$KILLSWITCH" != off ]; then
+			tun_guard on "$TUN_DEV" || die "не поставить постоянный kill switch"
+		else tun_guard off "$TUN_DEV"; fi
+	fi
 	if [ -f /etc/openwrt_release ]; then
 		if [ "$1" = on ]; then
 			if uci -q get firewall.cattunnel >/dev/null; then
-				# зона от старой версии — без IPv6 через туннель (masq6): дописать
+				# зона от старой версии - без IPv6 через туннель (masq6): дописать
 				[ "$(uci -q get firewall.cattunnel.masq6)" = 1 ] && return 0
 				uci -q set firewall.cattunnel.masq6='1' && uci -q commit firewall
 				/etc/init.d/firewall reload >/dev/null 2>&1 || true
@@ -1241,7 +1368,7 @@ firewall() {  # on|off
 			iptables -t nat -C POSTROUTING -o "$TUN_DEV" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$TUN_DEV" -j MASQUERADE
 			iptables -C FORWARD -o "$TUN_DEV" -j ACCEPT 2>/dev/null || iptables -I FORWARD -o "$TUN_DEV" -j ACCEPT
 			iptables -C FORWARD -i "$TUN_DEV" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -i "$TUN_DEV" -m state --state RELATED,ESTABLISHED -j ACCEPT
-			# IPv6 — по факту: сервер дал туннелю IPv6-адрес (has_ipv6 в подписке) — устройства ходят по IPv6 через
+			# IPv6 - по факту: сервер дал туннелю IPv6-адрес (has_ipv6 в подписке) - устройства ходят по IPv6 через
 			# туннель под этим адресом (NAT66: в домашней сети ULA или адреса провайдера, серверу они не нужны)
 			if ip -6 addr show dev "$TUN_DEV" scope global 2>/dev/null | grep -q inet6; then
 				ip6tables -t nat -C POSTROUTING -o "$TUN_DEV" -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -o "$TUN_DEV" -j MASQUERADE 2>/dev/null || true
@@ -1249,7 +1376,7 @@ firewall() {  # on|off
 				ip6tables -C FORWARD -i "$TUN_DEV" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || ip6tables -I FORWARD -i "$TUN_DEV" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 			fi
 			# MSS в обе стороны (SYN туда и SYN-ACK оттуда): иначе крупные пакеты к туннелю (MTU $MTU) теряются,
-			# мелкое (страница «мой IP») открывается, остальное виснет — так было на Keenetic 07.10
+			# мелкое (страница «мой IP») открывается, остальное виснет - так было на Keenetic 07.10
 			mss=$((MTU - 40))
 			for dir in -o -i; do
 				iptables -t mangle -C FORWARD $dir "$TUN_DEV" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$mss" 2>/dev/null || \
@@ -1282,21 +1409,26 @@ cmd_run() {  # передний план, не выходит: сторож ту
 	other=$(cat "$RUN/run.pid" 2>/dev/null || true)
 	if [ -n "$other" ] && [ "$other" != $$ ] && kill -0 "$other" 2>/dev/null && \
 	   tr '\0' ' ' < "/proc/$other/cmdline" 2>/dev/null | grep -q "cattunnel run"; then
-		die "уже работает сторож (pid $other) — cattunnel stop"
+		die "уже работает сторож (pid $other) - cattunnel stop"
 	fi
 	echo $$ > "$RUN/run.pid"
-	# Подписка старше 6 часов — обновить (не вышло — едем со старой).
+	UPGRADE_TOKEN=$(pending_token "$ETC/upgrade.pending" || true)
+	RESTART_TOKEN=$(pending_token "$RUN/restart.pending" || true)
+	# Подписка старше 6 часов - обновить (не вышло - едем со старой).
 	if [ -n "$SUB_URL" ] && [ -n "$(find "$BUNDLE" -mmin +360 2>/dev/null)" ]; then
 		( cmd_update ) || say "подписка не обновилась, беру сохранённую"
 	fi
 	[ -f "$BUNDLE" ] || die "нет подписки: cattunnel import <ссылка> <ключ>"
+	if ! on_demand || engine_running; then hold_rules; fi
+	# Rebuild the persistent barrier under the temporary one when TUN_DEV changed.
+	if command -v tun_guard >/dev/null 2>&1; then tun_guard off "$TUN_DEV"; fi
 	ru_maybe_update
-	# tun: зона/правила фаервола должны быть всегда (их могло снять удаление пакета) — идемпотентно
+	# tun: зона/правила фаервола должны быть всегда (их могло снять удаление пакета) - идемпотентно
 	if [ "$MODE" = tun ]; then firewall on; fi
 	trap 'stop_engine; rm -f "$RUN/active" "$RUN/run.pid"; exit 0' TERM INT HUP
 	kill_strays
 	if [ "$MODE" != tun ] || [ "$DNS" != tunnel ] || [ -n "$DEVICES" ]; then dns_apply off; fi
-	# DEVICES выключили — снять его правила; включили — kill switch для устройств уже до подключения
+	# DEVICES выключили - снять его правила; включили - kill switch для устройств уже до подключения
 	if [ "$MODE" = tun ] && [ -n "$DEVICES" ]; then devices_apply on "$SERVER"; else devices_apply off; fi
 	active=$SERVER
 	failed_round=0
@@ -1305,7 +1437,7 @@ cmd_run() {  # передний план, не выходит: сторож ту
 		echo "$active" > "$RUN/active"
 		if connect "$active"; then
 			say "подключено: $active"
-			# IPv6 туннеля известен только теперь — NAT66 (firewall) ставится, если сервер его дал
+			# IPv6 туннеля известен только теперь - NAT66 (firewall) ставится, если сервер его дал
 			[ "$MODE" != tun ] || firewall on >/dev/null 2>&1 || true
 			if [ "$MODE" = tun ] && [ -n "$DEVICES" ]; then devices_apply on "$active"
 			elif [ "$MODE" = tun ] && [ "$DNS" = tunnel ]; then dns_apply on "$active"; fi
@@ -1314,16 +1446,19 @@ cmd_run() {  # передний план, не выходит: сторож ту
 			while kill -0 "$PID" 2>/dev/null; do
 				nap "$CHECK_EVERY"
 				trim_log
-				if probe; then fails=0; else fails=$((fails + 1)); fi
+				if probe; then
+					fails=0
+					release_pending_after_probe
+				else fails=$((fails + 1)); fi
 				[ "$MODE" = tun ] && devices_check "$active"
-				# по требованию: устройства молчат IDLE_STOP секунд — гасим туннель и ждём их снова
+				# по требованию: устройства молчат IDLE_STOP секунд - гасим туннель и ждём их снова
 				if on_demand; then
 					pk=$(dev_packets)
 					if [ "$pk" -gt "${last_pk:-0}" ]; then idle=0; else idle=$((${idle:-0} + CHECK_EVERY)); fi
 					last_pk=$pk
 					if [ "$idle" -ge "$IDLE_STOP" ]; then
-						say "DEVICES: устройства молчат $((idle / 60)) мин — гашу туннель"
-						stop_engine; idle=0; last_pk=0
+						say "DEVICES: устройства молчат $((idle / 60)) мин - гашу туннель"
+						stop_engine --idle; idle=0; last_pk=0
 						wait_devices; active=$SERVER; continue 2
 					fi
 				fi
@@ -1343,14 +1478,14 @@ cmd_run() {  # передний план, не выходит: сторож ту
 				fi
 			done
 			stop_engine
-			# Движок упал сам (а не сервер пропал) — сначала тот же сервер ещё раз.
+			# Движок упал сам (а не сервер пропал) - сначала тот же сервер ещё раз.
 			if [ "$crashed" = 1 ]; then say "$active: движок остановился, переподключаюсь"; engine_tail; nap 3; continue; fi
 		else
 			say "$active: не подключился"
 		fi
-		# Пропал сам интернет (не сервер) — менять сервер бессмысленно: ждать на этом же.
+		# Пропал сам интернет (не сервер) - менять сервер бессмысленно: ждать на этом же.
 		if ! wan_ok; then
-			say "нет интернета у роутера — жду на $active ($WAN_WHY)"
+			say "нет интернета у роутера - жду на $active ($WAN_WHY)"
 			# Ждать не дольше 5 минут: проверка могла ошибиться, а тогда вечное ожидание
 			# хуже лишней попытки. Каждую минуту - строка в журнал с причиной.
 			waited=0
@@ -1363,7 +1498,7 @@ cmd_run() {  # передний план, не выходит: сторож ту
 		fi
 		if [ "$FAILOVER" = on ]; then
 			active=$(next_server "$active")
-			# Прошли весь круг — пауза, чтобы не долбить «замороженные» адреса.
+			# Прошли весь круг - пауза, чтобы не долбить «замороженные» адреса.
 			if [ "$active" = "$SERVER" ]; then
 				failed_round=$((failed_round + 1))
 				say "ни один сервер не ответил, пауза $((60 * failed_round)) с"
@@ -1382,10 +1517,10 @@ cmd_mihomo() {  # готовый кусок для /etc/nikki/profiles/*.yaml
 	# --- CatTunnel (вставить в профиль mihomo) ---
 	# 1) в proxies:
 	  - {name: CatTunnel, type: socks5, server: $host, port: $port, udp: true}
-	# 2) в proxy-groups: CatTunnel первым, VLESS — запасной (переключение само, по проверке)
+	# 2) в proxy-groups: CatTunnel первым, VLESS - запасной (переключение само, по проверке)
 	  - {name: VPN, type: fallback, proxies: [CatTunnel, VLESS-REALITY], url: "http://connectivitycheck.gstatic.com/generate_204", interval: 120, lazy: false}
 	#    и в селекторы PROXY / YOUTUBE / FINAL добавить VPN первым: proxies: [VPN, VLESS-REALITY, DIRECT]
-	# 3) в rules — САМЫМИ ПЕРВЫМИ, чтобы сам туннель не завернулся в себя:
+	# 3) в rules - САМЫМИ ПЕРВЫМИ, чтобы сам туннель не завернулся в себя:
 	  - PROCESS-NAME,trusttunnel_client,DIRECT
 	EOF
 	sed -n 's/^addresses = \[\(.*\)\]/\1/p' "$BUNDLE" | tr ',' '\n' | tr -d ' "' | sed 's/:[0-9]*$//' | sort -u | while read -r ip; do
@@ -1435,10 +1570,10 @@ cmd_json() {
 			"$([ -n "$SUB_URL" ] && echo true || echo false)" "$([ -s "$KEY" ] && echo true || echo false)" \
 			"$age" "$(jstr "$ver")"
 		;;
-	leases)  # устройства в сети: аренды DHCP + соседи без аренды (статический адрес) — для выбора DEVICES
+	leases)  # устройства в сети: аренды DHCP + соседи без аренды (статический адрес) - для выбора DEVICES
 		{
 			hosts_table | awk '{n = ($4 != "-" ? $4 : ($3 != "-" ? $3 : "")); print $1, $2, n}' 
-			# соседи — только из дома: без интерфейса маршрута по умолчанию (WAN) и без туннеля
+			# соседи - только из дома: без интерфейса маршрута по умолчанию (WAN) и без туннеля
 			wan=$(ip route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
 			awk -v wan="$wan" -v tun="$TUN_DEV" 'NR > 1 && $3 != "0x0" && $4 != "00:00:00:00:00:00" && $6 != wan && $6 != tun {print tolower($4), $1, ""}' /proc/net/arp 2>/dev/null
 		} | awk '!seen[$1]++' | {
@@ -1494,7 +1629,7 @@ d_hint() { D_HINT="$D_HINT$1
 "; }
 
 installed() {  # пакет установлен? Базу читаем напрямую: doctor --apply зовёт postinst, а opkg
-	# в это время держит блокировку и list-installed молчит; apk (OpenWrt 25) — свой формат базы
+	# в это время держит блокировку и list-installed молчит; apk (OpenWrt 25) - свой формат базы
 	[ -f "/usr/lib/opkg/info/$1.control" ] || [ -f "/opt/lib/opkg/info/$1.control" ] || \
 		grep -qx "P:$1" /lib/apk/db/installed 2>/dev/null
 }
@@ -1503,7 +1638,7 @@ port_busy() { netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$";
 
 doctor_scan() {
 	proxy=""; vpn=""; dnsmgr=""
-	# прокси-менеджеры: CatTunnel для них — исходящий SOCKS5, свои правила остаются как есть
+	# прокси-менеджеры: CatTunnel для них - исходящий SOCKS5, свои правила остаются как есть
 	for p in nikki openclash luci-app-passwall luci-app-passwall2 sing-box xray-core v2raya podkop luci-app-ssr-plus; do
 		installed "$p" && proxy="$proxy $p"
 	done
@@ -1524,8 +1659,8 @@ doctor_scan() {
 		for n in 1 2 3 4 5; do [ "$(nvram get vpn_client${n}_state 2>/dev/null)" = 2 ] && vpn="$vpn openvpn-client$n"; done
 		for n in 1 2 3 4 5; do [ "$(nvram get wgc${n}_enable 2>/dev/null)" = 1 ] && vpn="$vpn wireguard-client$n"; done
 	fi
-	# Keenetic называет WAN как угодно (Wi-Fi-клиент, apcli…) — там VPN видно из ndmc выше, эвристику не берём
-	# (через if: «[ ] || a | b && c» выполнял c и на Keenetic — до 07.10 там всегда «находился» VPN)
+	# Keenetic называет WAN как угодно (Wi-Fi-клиент, apcli…) - там VPN видно из ndmc выше, эвристику не берём
+	# (через if: «[ ] || a | b && c» выполнял c и на Keenetic - до 07.10 там всегда «находился» VPN)
 	if [ -z "$NDMC" ] && ip route show default 2>/dev/null | grep -Ev "dev (eth|wan|pppoe|br|lan|$TUN_DEV)" | grep -q default; then
 		vpn="$vpn (маршрут по умолчанию через другой туннель)"
 	fi
@@ -1539,65 +1674,65 @@ doctor_scan() {
 	zap=""; { installed zapret || [ -d /opt/zapret ] || running_p nfqws; } && zap=yes
 
 	# --- выводы и рекомендации ---
-	# свободный порт для SOCKS (наш собственный движок порт тоже занимает — его не считаем)
+	# свободный порт для SOCKS (наш собственный движок порт тоже занимает - его не считаем)
 	cur=${SOCKS##*:}
 	if port_busy "$cur" && ! engine_running; then
 		for p in $(seq 1081 1099); do port_busy "$p" || { D_SOCKS="${SOCKS%:*}:$p"; break; }; done
-		d_add warn "порт $cur занят другой программой — SOCKS переедет на ${D_SOCKS:-другой порт} (cattunnel doctor --apply или кнопка «Применить»)"
+		d_add warn "порт $cur занят другой программой - SOCKS переедет на ${D_SOCKS:-другой порт} (cattunnel doctor --apply или кнопка «Применить»)"
 	fi
-	sx=${D_SOCKS:-$SOCKS}   # в подсказках — порт, который будет после применения
+	sx=${D_SOCKS:-$SOCKS}   # в подсказках - порт, который будет после применения
 	if [ -n "$proxy" ]; then
 		D_MODE=socks
-		d_add warn "найден прокси-менеджер:$proxy. CatTunnel встанет к нему исходящим SOCKS5 — его правила, DNS и маршрутизация остаются как есть"
+		d_add warn "найден прокси-менеджер:$proxy. CatTunnel встанет к нему исходящим SOCKS5 - его правила, DNS и маршрутизация остаются как есть"
 		case "$proxy" in
 			*nikki*) if [ "${NIKKI:-off}" = on ]; then d_add ok "CatTunnel встроен в nikki (группа CatTunnel-VPN первой в PROXY/YOUTUBE/FINAL)"
-			         else d_hint "nikki: cattunnel nikki on (или кнопка «Встроить в nikki») — встанет сам через mixin, профиль не теряется, при сбое откатывается"; fi ;;
-			*openclash*|*mihomo*|*clash*|*xkeen*) d_hint "OpenClash/XKeen/mihomo: cattunnel mihomo — готовые строки прокси, группы и DIRECT для самого туннеля" ;;
+			         else d_hint "nikki: cattunnel nikki on (или кнопка «Встроить в nikki») - встанет сам через mixin, профиль не теряется, при сбое откатывается"; fi ;;
+			*openclash*|*mihomo*|*clash*|*xkeen*) d_hint "OpenClash/XKeen/mihomo: cattunnel mihomo - готовые строки прокси, группы и DIRECT для самого туннеля" ;;
 		esac
-		case "$proxy" in *passwall*|*ssr-plus*) d_hint "Passwall/SSR+: добавить узел типа Socks, адрес ${sx%:*}, порт ${sx##*:}; адреса наших серверов — в прямые (cattunnel mihomo покажет их)" ;; esac
-		case "$proxy" in *sing-box*|*podkop*) d_hint "sing-box/Podkop: outbound {\"type\":\"socks\",\"server\":\"${sx%:*}\",\"server_port\":${sx##*:}}; наши серверы — в direct" ;; esac
-		case "$proxy" in *xray*|*v2raya*) d_hint "Xray/v2rayA: outbound protocol socks, ${sx}; наши серверы — в direct" ;; esac
+		case "$proxy" in *passwall*|*ssr-plus*) d_hint "Passwall/SSR+: добавить узел типа Socks, адрес ${sx%:*}, порт ${sx##*:}; адреса наших серверов - в прямые (cattunnel mihomo покажет их)" ;; esac
+		case "$proxy" in *sing-box*|*podkop*) d_hint "sing-box/Podkop: outbound {\"type\":\"socks\",\"server\":\"${sx%:*}\",\"server_port\":${sx##*:}}; наши серверы - в direct" ;; esac
+		case "$proxy" in *xray*|*v2raya*) d_hint "Xray/v2rayA: outbound protocol socks, ${sx}; наши серверы - в direct" ;; esac
 	elif [ -n "$vpn" ]; then
 		D_MODE=socks
-		d_add warn "найден VPN:$vpn. Два VPN с маршрутом по умолчанию спорят за маршруты — оставляю CatTunnel в режиме SOCKS5; для tun сначала выключите маршрут по умолчанию у того VPN"
+		d_add warn "найден VPN:$vpn. Два VPN с маршрутом по умолчанию спорят за маршруты - оставляю CatTunnel в режиме SOCKS5; для tun сначала выключите маршрут по умолчанию у того VPN"
 	else
-		if [ -n "$DEVICES" ]; then d_add ok "других VPN и прокси не нашёл — режим tun, через туннель только выбранные устройства ($DEVICES)"
-		else d_add ok "других VPN и прокси не нашёл — подходит режим tun (весь дом через туннель)"; fi
+		if [ -n "$DEVICES" ]; then d_add ok "других VPN и прокси не нашёл - режим tun, через туннель только выбранные устройства ($DEVICES)"
+		else d_add ok "других VPN и прокси не нашёл - подходит режим tun (весь дом через туннель)"; fi
 		D_MODE=tun
 	fi
-	# «только устройства» (DEVICES) бывает только в tun — не советовать SOCKS, это бы его выключило
+	# «только устройства» (DEVICES) бывает только в tun - не советовать SOCKS, это бы его выключило
 	if [ -n "$DEVICES" ] && [ "$MODE" = tun ] && [ "$D_MODE" != tun ] && [ -z "$proxy" ]; then
 		D_MODE=tun
-		d_add info "режим «только устройства» (DEVICES: $DEVICES) — оставляю tun: через туннель идут только они, маршруты остального дома не трогаются"
+		d_add info "режим «только устройства» (DEVICES: $DEVICES) - оставляю tun: через туннель идут только они, маршруты остального дома не трогаются"
 	fi
 	if [ -n "$dnsmgr" ]; then
 		D_DNS=router
-		d_add info "DNS ведёт:$dnsmgr — CatTunnel DNS не трогает (DNS роутера)"
-		case "$dnsmgr" in *dguard*) d_hint "AdGuard Home: чтобы и DNS шёл через туннель — в его upstream поставьте семейный DNS из подписки, режим tun довезёт его до сервера" ;; esac
+		d_add info "DNS ведёт:$dnsmgr - CatTunnel DNS не трогает (DNS роутера)"
+		case "$dnsmgr" in *dguard*) d_hint "AdGuard Home: чтобы и DNS шёл через туннель - в его upstream поставьте семейный DNS из подписки, режим tun довезёт его до сервера" ;; esac
 	elif [ -n "$proxy" ] || [ "$D_MODE" = socks ]; then
-		D_DNS=router   # «DNS через туннель» — только для режима tun
+		D_DNS=router   # «DNS через туннель» - только для режима tun
 	else
 		D_DNS=tunnel
-		d_add ok "DNS свободен — можно «через туннель» (семейный DNS из подписки, российские зоны — через провайдера)"
+		d_add ok "DNS свободен - можно «через туннель» (семейный DNS из подписки, российские зоны - через провайдера)"
 	fi
-	[ -n "$pbr" ] && d_add warn "найден$pbr — правила маршрутизации останутся; для tun лучше отдать маршруты им: устройство $TUN_DEV, а CatTunnel маршруты не ставит (спросите — сделаю отдельную настройку)"
-	[ -n "$zap" ] && d_add info "найден zapret — не мешает: он обходит DPI для прямого (российского) трафика, туннель защищён сам"
-	[ -c /dev/net/tun ] || d_add warn "нет /dev/net/tun — режим tun работать не будет (OpenWrt: opkg install kmod-tun)"
-	# память: свободно (MemAvailable) + свободный swap/zram — вместе; одна формулировка с install.sh
+	[ -n "$pbr" ] && d_add warn "найден$pbr - правила маршрутизации останутся; для tun лучше отдать маршруты им: устройство $TUN_DEV, а CatTunnel маршруты не ставит (спросите - сделаю отдельную настройку)"
+	[ -n "$zap" ] && d_add info "найден zapret - не мешает: он обходит DPI для прямого (российского) трафика, туннель защищён сам"
+	[ -c /dev/net/tun ] || d_add warn "нет /dev/net/tun - режим tun работать не будет (OpenWrt: opkg install kmod-tun)"
+	# память: свободно (MemAvailable) + свободный swap/zram - вместе; одна формулировка с install.sh
 	mem=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
 	total=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
 	swapf=$(awk '/^SwapFree:/ {print int($2 / 1024)}' /proc/meminfo)
 	swapt=$(awk '/^SwapTotal:/ {print int($2 / 1024)}' /proc/meminfo)
 	mtxt="свободно ${mem:-?} из ${total:-?} МБ$( [ "${swapt:-0}" -gt 0 ] && echo ", swap ${swapf} из ${swapt} МБ")"
 	if [ $(( ${mem:-999} + ${swapf:-0} )) -lt 40 ]; then
-		d_add warn "память: $mtxt — движку нужно ~10–20 МБ; закройте лишнее или включите zram-swap"
+		d_add warn "память: $mtxt - движку нужно ~10-20 МБ; закройте лишнее или включите zram-swap"
 	else
-		d_add ok "память: $mtxt — хватит"
+		d_add ok "память: $mtxt - хватит"
 	fi
-	# swap на флешке/диске медленный и изнашивает носитель: если zram нет — посоветовать его
+	# swap на флешке/диске медленный и изнашивает носитель: если zram нет - посоветовать его
 	if [ "${swapt:-0}" -gt 0 ] && ! grep -q '^/dev/zram' /proc/swaps 2>/dev/null; then
 		sdev=$(awk 'NR > 1 {print $1; exit}' /proc/swaps)
-		d_hint "swap сейчас на носителе ($sdev) — он медленный и изнашивает флешку. Лучше zram в памяти: $( command -v apk >/dev/null 2>&1 && echo 'apk add zram-swap' || echo 'opkg install zram-swap'); и echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf; sysctl -p /etc/sysctl.d/99-swappiness.conf"
+		d_hint "swap сейчас на носителе ($sdev) - он медленный и изнашивает флешку. Лучше zram в памяти: $( command -v apk >/dev/null 2>&1 && echo 'apk add zram-swap' || echo 'opkg install zram-swap'); и echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf; sysctl -p /etc/sysctl.d/99-swappiness.conf"
 	fi
 	return 0
 }
@@ -1704,7 +1839,7 @@ nk_api() {  # <метод> <путь> [тело]: API mihomo (external-controlle
 	curl -fsS -m 5 -X "$1" ${sec:+-H "Authorization: Bearer $sec"} ${3:+-H "Content-Type: application/json" -d "$3"} "http://$ctl$2"
 }
 
-nk_select() {  # выбрать CatTunnel-VPN в селекторах (store-selected иначе держит прошлый выбор); прошлый — в nikki-selected.bak
+nk_select() {  # выбрать CatTunnel-VPN в селекторах (store-selected иначе держит прошлый выбор); прошлый - в nikki-selected.bak
 	: > "$ETC/nikki-selected.bak"
 	n=0
 	for g in $NK_SELECTORS; do
@@ -1759,14 +1894,14 @@ cmd_nikki() {
 			     /:/ {printf ", \"IP-CIDR6,%s/128,DIRECT,no-resolve\"", $0; next}
 			     /./ {printf ", \"DOMAIN,%s,DIRECT\"", $0}')
 		[ -f "$NK_MIXIN" ] || : > "$NK_MIXIN"
-		# свои записи — заменить (прошлые правила помним в nikki-rules.last), чужие — не трогать
+		# свои записи - заменить (прошлые правила помним в nikki-rules.last), чужие - не трогать
 		OLD=$(cat "$ETC/nikki-rules.last" 2>/dev/null || true) yq -M -i '
 			.nikki-proxies = ([{"name": "CatTunnel", "type": "socks5", "server": "'"$host"'", "port": '"$port"', "udp": true}] + ((.nikki-proxies // []) | map(select(.name != "CatTunnel")))) |
 			.nikki-proxy-groups = ([{"name": "'"$NK_GROUP"'", "type": "fallback", "proxies": '"$members"', "url": "http://connectivitycheck.gstatic.com/generate_204", "interval": 120, "lazy": false}] + ((.nikki-proxy-groups // []) | map(select(.name != "'"$NK_GROUP"'")))) |
 			.nikki-rules = (['"$rules"'] + ((.nikki-rules // []) | map(select(. as $r | (strenv(OLD) | split("\n")) | any_c(. == $r) | not))))
-		' "$NK_MIXIN" || { nk_restore "$prof"; die "не смог записать $NK_MIXIN — всё возвращено"; }
+		' "$NK_MIXIN" || { nk_restore "$prof"; die "не смог записать $NK_MIXIN - всё возвращено"; }
 		yq -M -r '.nikki-rules[]' "$NK_MIXIN" | head -n "$(printf '%s' "$rules" | grep -o '", "' | wc -l | awk '{print $1 + 1}')" > "$ETC/nikki-rules.last"
-		# CatTunnel-VPN — первым в селекторы профиля (VLESS и DIRECT остаются, переключение в UI как было)
+		# CatTunnel-VPN - первым в селекторы профиля (VLESS и DIRECT остаются, переключение в UI как было)
 		for g in $NK_SELECTORS; do
 			yq -M -i '(.proxy-groups[] | select(.name == "'"$g"'" and .type == "select") | .proxies) |= (["'"$NK_GROUP"'"] + (. - ["'"$NK_GROUP"'"]))' "$prof"
 		done
@@ -1780,9 +1915,9 @@ cmd_nikki() {
 			echo "встроено: CatTunnel → $NK_GROUP (запасной: ${backup:-нет}) первым в $NK_SELECTORS; бэкап профиля: $prof.cattunnel-$stamp"
 			sel=$(nk_select)
 			if [ "${sel:-0}" -gt 0 ]; then echo "выбрано в $sel из групп $NK_SELECTORS (через API mihomo; прежний выбор вернётся при «cattunnel nikki off»)"
-			else say "не смог выбрать $NK_GROUP через API mihomo (нет curl или external-controller) — выберите вручную в панели nikki"; fi
+			else say "не смог выбрать $NK_GROUP через API mihomo (нет curl или external-controller) - выберите вручную в панели nikki"; fi
 		else
-			say "nikki не поднялся с CatTunnel — откатываю"
+			say "nikki не поднялся с CatTunnel - откатываю"
 			nk_restore "$prof"
 			die "встроиться не вышло, всё возвращено как было (logread -e nikki)"
 		fi
@@ -1802,7 +1937,7 @@ nk_restore() {  # <профиль>: вернуть профиль/mixin/флаг
 	   [ "$(md5sum "$1" | cut -d' ' -f1)" = "$(cat "$ETC/nikki-profile.ours")" ]; then
 		cp -p "$ETC/nikki-profile.bak" "$1"
 	elif [ -f "$ETC/nikki-profile.bak" ]; then
-		# профиль с тех пор меняли (или nikki его перегенерировал) — только убрать нашу группу из селекторов
+		# профиль с тех пор меняли (или nikki его перегенерировал) - только убрать нашу группу из селекторов
 		yq -M -i '(.proxy-groups[] | select(.type == "select") | .proxies) |= (. - ["'"$NK_GROUP"'"])' "$1" 2>/dev/null
 	fi
 	if [ -f "$ETC/nikki-mixin.bak.absent" ]; then rm -f "$NK_MIXIN" "$ETC/nikki-mixin.bak.absent"
@@ -1813,7 +1948,7 @@ nk_restore() {  # <профиль>: вернуть профиль/mixin/флаг
 }
 
 running() { { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; } || [ -n "$(run_pids)" ]; }
-run_pids() {  # сторожа «cattunnel run» (зовётся из start/stop — сами они не «run»); без их подоболочек
+run_pids() {  # сторожа «cattunnel run» (зовётся из start/stop - сами они не «run»); без их подоболочек
 	for p in $(pgrep -f "cattunnel run\$" 2>/dev/null); do
 		pp=$(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null || true)
 		{ tr '\0' ' ' < "/proc/$pp/cmdline"; } 2>/dev/null | grep -q "cattunnel run" || echo "$p"
@@ -1823,7 +1958,7 @@ run_pids() {  # сторожа «cattunnel run» (зовётся из start/stop
 stop_all() {  # Entware: цикл, ВСЕ сторожа и движок; kill цикла не убивает уже запущенного сторожа
 	if [ -f "$PIDF" ]; then kill "$(cat "$PIDF")" 2>/dev/null || true; fi
 	rm -f "$PIDF"
-	# сторож ловит TERM только после своего sleep (до 60 с) — сначала гасим его детей (sleep, движок)
+	# сторож ловит TERM только после своего sleep (до 60 с) - сначала гасим его детей (sleep, движок)
 	for p in $(run_pids); do
 		kill "$p" 2>/dev/null || true
 		for c in $(pgrep -P "$p" 2>/dev/null); do kill "$c" 2>/dev/null || true; done
@@ -1833,7 +1968,10 @@ stop_all() {  # Entware: цикл, ВСЕ сторожа и движок; kill �
 	for p in $(pgrep -f "^$ENGINE" 2>/dev/null); do kill "$p" 2>/dev/null || true; done
 	i=0; while engine_running && [ $i -lt 5 ]; do sleep 1; i=$((i + 1)); done
 	for p in $(pgrep -f "^$ENGINE" 2>/dev/null); do kill -9 "$p" 2>/dev/null || true; done
-	# tt0 без движка — сирота (новый движок его не пересоздаст: «already exists»)
+	# A supervisor killed before its TERM trap (or by KILL) cannot remove this.
+	# Do not let a stale PID make a later reinstall look like a running service.
+	rm -f "$RUN/run.pid"
+	# tt0 без движка - сирота (новый движок его не пересоздаст: «already exists»)
 	[ -d "/sys/class/net/$TUN_DEV" ] && ip link delete "$TUN_DEV" 2>/dev/null || true
 }
 
@@ -1842,7 +1980,7 @@ stop_all() {  # Entware: цикл, ВСЕ сторожа и движок; kill �
 if [ -f "$ETC/WRONG_ARCH" ]; then
 	case "${1:-}" in
 	json)   printf '{"running":false,"broken":%s}\n' "$(jstr "$(cat "$ETC/WRONG_ARCH")")"; exit 0 ;;
-	stop|cleanup) ;;
+	stop|cleanup|hold|pending|prepare-stop) ;;
 	*)      die "$(cat "$ETC/WRONG_ARCH")" ;;
 	esac
 fi
@@ -1860,13 +1998,35 @@ case "${1:-}" in
 	        while [ $# -ge 2 ]; do save_setting "$1" "$2"; shift 2; done ;;
 	config) write_toml "$SERVER"; sed 's/^\(password = \).*/\1"…"/' "$TOML" ;;
 	settings) echo "# $SETTINGS (настройки CatTunnel хранятся здесь, не в uci; менять: cattunnel set ИМЯ значение или LuCI)"
-	        [ -f "$SETTINGS" ] && sed "s#^\(SUB_URL='[^']*/api/ct/\).*#\1…'#" "$SETTINGS" || echo "# пока пусто — всё по умолчанию" ;;
+	        [ -f "$SETTINGS" ] && sed "s#^\(SUB_URL='[^']*/api/ct/\).*#\1…'#" "$SETTINGS" || echo "# пока пусто - всё по умолчанию" ;;
 	run)    cmd_run ;;
-	start)  if running; then echo "уже работает"; exit 0; fi
+	start)  rm -f "$RUN/stopping"; if running; then echo "уже работает"; exit 0; fi
 	        ( while :; do "$0" run >> "$LOG" 2>&1 || true; sleep 5; done ) </dev/null >/dev/null 2>&1 &
 	        echo $! > "$PIDF"; echo "запущен" ;;
-	stop)   stop_all; echo "остановлен" ;;
-	restart) "$0" stop; "$0" start ;;
+	# These internal commands let procd distinguish a restart from a user stop.
+	hold) rm -f "$RUN/stopping"; hold_rules --new ;;
+	upgrade-protocol) echo 1 ;;
+	pending) upgrade_pending_live "$ETC"; exit $? ;;
+	prepare-stop) upgrade_pending_live "$ETC" || touch "$RUN/stopping" ;;
+	stop)   case "${2:-}" in
+	            --keep-rules) rm -f "$RUN/stopping"; hold_rules --new
+	                if [ -f /etc/openwrt_release ] && [ -x /etc/init.d/cattunnel ]; then
+	                    CATTUNNEL_KEEP_RULES=1 /etc/init.d/cattunnel stop
+	                else stop_all; fi ;;
+	            --force) touch "$RUN/stopping"; rm -f "$ETC/upgrade.pending" "$RUN/restart.pending"
+	                if [ -f /etc/openwrt_release ] && [ -x /etc/init.d/cattunnel ]; then
+	                    /etc/init.d/cattunnel stop
+	                else stop_all; fi
+	                release_rules --force ;;
+	            '') if [ -f /etc/openwrt_release ] && [ -x /etc/init.d/cattunnel ]; then
+	                    /etc/init.d/cattunnel stop
+	                elif upgrade_pending_live "$ETC"; then hold_rules; stop_all
+	                else touch "$RUN/stopping"; stop_all; release_rules; fi ;;
+	            *) die "cattunnel stop [--force|--keep-rules]" ;;
+	        esac; echo "остановлен" ;;
+	restart) if [ -f /etc/openwrt_release ] && [ -x /etc/init.d/cattunnel ]; then
+	            /etc/init.d/cattunnel restart
+	        else rm -f "$RUN/stopping"; hold_rules --new; stop_all; "$0" start; fi ;;
 	status) if pgrep -f "^$ENGINE" >/dev/null 2>&1; then echo "работает: $SERVER, режим $MODE"
 	        elif [ "$(cat "$RUN/state" 2>/dev/null)" = idle ] && [ -f "$RUN/run.pid" ] && kill -0 "$(cat "$RUN/run.pid")" 2>/dev/null; then
 	             echo "ждёт устройства (DEVICES): туннель поднимется, когда они появятся в сети"
@@ -1882,7 +2042,7 @@ case "${1:-}" in
 	report) cmd_report ;;
 	nikki)  cmd_nikki "${2:-status}" ;;
 	log)    tail -n "${2:-100}" "$LOG" 2>/dev/null | sed 's/\(password[^,;]*[=:]\)[^,;]*/\1 …/I' || true ;;
-	cleanup) dns_apply off; devices_apply off; firewall off; rm -f "$RUN/active" "$TOML" "$LOG"; echo "DNS и фаервол возвращены как были" ;;
+	cleanup) ! upgrade_pending_live "$ETC" || die "идёт обновление: блокировка сохранена"; release_rules; rm -f "$RUN/active" "$TOML" "$LOG"; echo "DNS и фаервол возвращены как были" ;;
 	web)    shift; cmd_web "$@" ;;
 	direct) shift; cmd_direct "$@" ;;
 	upgrade) shift; cmd_upgrade "$@" ;;
@@ -1904,7 +2064,7 @@ case "${1:-}" in
 	        on)  [ "$MODE" = tun ] && [ -n "$DEVICES" ] || die "DEVICES работает в режиме tun: cattunnel set MODE tun DEVICES '<MAC или имя> ...'"
 	             devices_apply on "$(cat "$RUN/active" 2>/dev/null || echo "$SERVER")" ;;
 	        off) devices_apply off; echo "DEVICES: правила сняты" ;;
-	        status) if [ -z "$DEVICES" ]; then echo "DEVICES пусто — в туннеле весь дом (режим $MODE)"
+	        status) if [ -z "$DEVICES" ]; then echo "DEVICES пусто - в туннеле весь дом (режим $MODE)"
 	                else echo "DEVICES: $DEVICES"
 	                     echo "найдено в сети сейчас:"; tbl=$(hosts_table)
 	                     for m in $(devices_macs); do printf '  %s  %s\n' "$m" "$(printf '%s\n' "$tbl" | awk -v m="$m" '$1 == m {print $2, ($4 != "-" ? $4 : $3); exit}')"; done

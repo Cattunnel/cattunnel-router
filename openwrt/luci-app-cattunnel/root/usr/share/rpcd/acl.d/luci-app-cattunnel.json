@@ -90,6 +90,9 @@
 				],
 				"/usr/bin/cattunnel upgrade check": [
 					"exec"
+				],
+				"/usr/bin/cattunnel stop --force": [
+					"exec"
 				]
 			}
 		}

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>CatTunnel на роутере</title>
 <style>
-/* Цвета — из приложения CatTunnel (lib/common/theme/theme_palette.dart): сталь, янтарь, кирпич. */
+/* Цвета - из приложения CatTunnel (lib/common/theme/theme_palette.dart): сталь, янтарь, кирпич. */
 :root {
 	--steel:#3972AA; --steel-2:#4F8AC4; --amber:#F08400; --brick:#F44725; --ok:#2E8B57;
 	--paper:#FFFFFF; --mist:#F6F7F9; --line:#E2E6EC; --ink:#30353B; --ink-2:#6A727E;
@@ -106,7 +106,7 @@ li { margin:3px 0; }
 	padding:6vh 12px; z-index:15; overflow:auto; }
 .modal { background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:18px; width:min(720px, 100%); }
 .loading { color:var(--ink-2); }
-/* «Справка»: длинный текст — короче строка, код без рамки */
+/* «Справка»: длинный текст - короче строка, код без рамки */
 .help { max-width:none; } .help p, .help li { max-width:72ch; }
 .help h2 { font-size:22px; margin-top:4px; } .help h3 { margin-top:18px; }
 .help code { font:13px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; background:var(--mist); border:1px solid var(--line);
@@ -120,7 +120,7 @@ footer { max-width:880px; margin:0 auto; padding:0 16px 28px; color:var(--ink-2)
 <header>
 	<div class="bar">
 		<div class="who">
-			<!-- Марсик: глаза показывают туннель — открыты (работает), сонные (ждёт устройства), крестиком (остановлен) -->
+			<!-- Марсик: глаза показывают туннель - открыты (работает), сонные (ждёт устройства), крестиком (остановлен) -->
 			<svg id="marsik" data-state="unknown" viewBox="0 0 48 48" role="img" aria-label="Состояние туннеля">
 				<path class="head" d="M8 6 L18 15 Q24 13 30 15 L40 6 L40 30 Q40 43 24 43 Q8 43 8 30 Z"/>
 				<ellipse class="eye" cx="17" cy="26" rx="5" ry="5.4"/>
@@ -140,7 +140,7 @@ footer { max-width:880px; margin:0 auto; padding:0 16px 28px; color:var(--ink-2)
 	</div>
 </header>
 <main id="view"></main>
-<footer>Страница открывается только из домашней сети. Пароль — внизу «Настроек» (или командой cattunnel web password).</footer>
+<footer>Страница открывается только из домашней сети. Пароль - внизу «Настроек» (или командой cattunnel web password).</footer>
 <div id="notifications" aria-live="polite"></div>
 </body>
 </html>

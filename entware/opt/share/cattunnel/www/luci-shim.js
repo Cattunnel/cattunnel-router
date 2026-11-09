@@ -1,6 +1,6 @@
 'use strict';
 /* Прослойка вместо LuCI для Keenetic / ASUS Merlin: запускает ТЕ ЖЕ страницы CatTunnel, что и LuCI на
- * OpenWrt (luci/view/cattunnel/*.js, кладутся в пакет при сборке), — одна кодовая база, одинаковые
+ * OpenWrt (luci/view/cattunnel/*.js, кладутся в пакет при сборке), - одна кодовая база, одинаковые
  * возможности. Реализовано ровно то, чем эти страницы пользуются: E(), dom.content, ui.addNotification,
  * ui.showModal/hideModal, ui.createHandlerFn, poll.add, fs.exec, view.extend, baseclass.extend.
  * fs.exec идёт в cgi-bin/api (action=exec), где разрешены те же команды, что в ACL LuCI. */
@@ -98,7 +98,7 @@
 		const main = document.getElementById('view');
 		dom.content(main, E('p', { 'class': 'loading' }, 'Загружаю…'));
 		loadModule('luci/cattunnel/common.js', {}).then((ct) =>
-			// каждый показ — свежий экземпляр страницы (как в LuCI при переходе)
+			// каждый показ - свежий экземпляр страницы (как в LuCI при переходе)
 			fetch('luci/view/cattunnel/' + page + '.js', { cache: 'no-store' }).then((r) => r.text())
 				.then((src) => new Function('view', 'ui', 'dom', 'poll', 'fs', 'baseclass', 'ct', 'E', src)(view, ui, dom, poll, fs, baseclass, ct, E)))
 			.then((v) => Promise.resolve(v.load ? v.load() : null).then((d) => v.render(d)))
@@ -107,7 +107,7 @@
 		if (location.hash !== '#' + page) { try { history.pushState(null, '', '#' + page); } catch (e) {} }
 	}
 
-	/* Марсик в шапке: глаза — состояние туннеля (раз в 10 с, независимо от вкладки) */
+	/* Марсик в шапке: глаза - состояние туннеля (раз в 10 с, независимо от вкладки) */
 	function headerState() {
 		return fs.exec('/usr/bin/cattunnel', [ 'json', 'status' ]).then((r) => {
 			let s = null; try { s = JSON.parse(r.stdout); } catch (e) {}
@@ -123,12 +123,12 @@
 		headerState(); setInterval(headerState, 10000);
 		const tabs = document.getElementById('tabs');
 		PAGES.forEach(([ p, t ]) => tabs.appendChild(E('a', { 'href': '#' + p, 'data-page': p, 'click': (ev) => { ev.preventDefault(); show(p); } }, t)));
-		// «назад»/ссылка с #вкладкой — переключить без перезагрузки
+		// «назад»/ссылка с #вкладкой - переключить без перезагрузки
 		window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (PAGES.some(([ p ]) => p === h)) show(h); });
 		const start = (location.hash || '').slice(1);
 		show(PAGES.some(([ p ]) => p === start) ? start : 'status');
 	});
 	window.E = E;
 	window.CT_STANDALONE = true;   // отдельная страница, не LuCI (settings.js прячет «Выключить страницу»)
-	window.L = { resource(p) { return 'luci/' + p; } };   // L.resource — как в LuCI (страница «Справка»)
+	window.L = { resource(p) { return 'luci/' + p; } };   // L.resource - как в LuCI (страница «Справка»)
 })();

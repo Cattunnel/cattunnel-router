@@ -1,5 +1,6 @@
 """Exercise the real shell report with isolated firmware/files and adversarial secrets."""
 import json
+import subprocess
 from pathlib import Path
 import unittest
 import test_device_key as harness
@@ -64,6 +65,26 @@ class ReportTests(unittest.TestCase):
         self.assertIn("ct.run([ 'report' ])", ui)
         self.assertIn('link.download', ui)
         self.assertIn('URL.revokeObjectURL', ui)
+
+
+    def test_entware_stop_button_can_execute_force_stop(self):
+        r = self.router
+        cli = r.base/'fake-cattunnel'
+        r.executable(cli, '#!/bin/sh\nprintf "%s\\n" "$*"\n')
+        api = r.base/'api'
+        source = (ROOT/'entware/opt/share/cattunnel/www/cgi-bin/api').read_text()
+        source = source.replace('/tmp/ct_web.', str(r.base/'ct_web.'))
+        api.write_text(source.replace('CT=/opt/bin/cattunnel;', f'CT={cli};'))
+        body = 'action=exec&cmd=/usr/bin/cattunnel&a0=stop&a1=--force'
+        env = dict(r.env, REQUEST_METHOD='POST', HTTP_X_CATTUNNEL='1', CONTENT_LENGTH=str(len(body)))
+        response = subprocess.run(['sh', str(api)], input=body, env=env,
+                                  text=True, capture_output=True, timeout=5)
+        self.assertEqual(response.returncode, 0, response.stderr)
+        data = json.loads(response.stdout.split('\n\n', 1)[1])
+        self.assertEqual(data['code'], 0, data)
+        self.assertEqual(data['stdout'].strip(), 'stop --force')
+        acl = json.loads((ROOT/'openwrt/luci-app-cattunnel/root/usr/share/rpcd/acl.d/luci-app-cattunnel.json').read_text())
+        self.assertEqual(acl['luci-app-cattunnel']['write']['file']['/usr/bin/cattunnel stop --force'], ['exec'])
 
 
 if __name__ == '__main__':

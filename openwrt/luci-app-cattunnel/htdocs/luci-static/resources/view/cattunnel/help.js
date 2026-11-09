@@ -3,12 +3,12 @@
 'require ui';
 'require dom';
 
-/* Справка — как «Помощь» в приложении: «CatTunnel на роутере» (router/help/ROUTER.ru.md) и
+/* Справка - как «Помощь» в приложении: «CatTunnel на роутере» (router/help/ROUTER.ru.md) и
  * «Как устроено подключение» (тот же CONNECTION.ru.md, что в приложении: движок общий).
- * Файлы кладёт сборка в resources/cattunnel/help/. Разметка — простой Markdown, без HTML. */
+ * Файлы кладёт сборка в resources/cattunnel/help/. Разметка - простой Markdown, без HTML. */
 
 function inline(text) {
-	// **жирный**, `код`, [текст](https://…) — всё через узлы DOM, без innerHTML
+	// **жирный**, `код`, [текст](https://…) - всё через узлы DOM, без innerHTML
 	const out = [];
 	const re = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
 	let last = 0, m;
@@ -60,7 +60,7 @@ return view.extend({
 
 	render([ router, connection ]) {
 		const body = E('div', { 'class': 'cbi-section help' });
-		const show = (md) => dom.content(body, md ? render(md) : E('p', {}, 'Справка не найдена — переустановите пакет CatTunnel.'));
+		const show = (md) => dom.content(body, md ? render(md) : E('p', {}, 'Справка не найдена - переустановите пакет CatTunnel.'));
 		const tabBtn = (text, md) => E('button', { 'class': 'btn', 'click': (ev) => {
 			ev.currentTarget.parentNode.querySelectorAll('button').forEach((b) => b.classList.remove('cbi-button-action'));
 			ev.currentTarget.classList.add('cbi-button-action');

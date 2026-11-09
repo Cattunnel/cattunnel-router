@@ -18,7 +18,7 @@ return baseclass.extend({
 	},
 
 	service(action) {
-		return fs.exec('/etc/init.d/cattunnel', [ action ]).catch(() => null);
+		return (action === 'stop' ? fs.exec('/usr/bin/cattunnel', [ 'stop', '--force' ]) : fs.exec('/etc/init.d/cattunnel', [ action ])).catch(() => null);
 	},
 
 	/* run, then show what happened; resolves to the result */

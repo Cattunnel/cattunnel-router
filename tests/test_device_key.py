@@ -5,6 +5,7 @@ clobbering a working bundle on failure, and disabling legacy decryption.
 Without CATTUNNEL_TEST_AGE_DIR, age executables are boundary doubles. Run: python3 -m unittest discover -s tests -v
 """
 import http.server
+import json
 import os
 import shutil
 from pathlib import Path
@@ -27,6 +28,8 @@ class DeviceKeyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.requests = []
         cls.responses = {}
+        cls.exchanges = []
+        cls.exchange_response = (200, {})
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -35,6 +38,14 @@ class DeviceKeyTests(unittest.TestCase):
                 self.send_response(status)
                 self.end_headers()
                 self.wfile.write(body)
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                cls.exchanges.append((self.path, body))
+                status, reply = cls.exchange_response
+                self.send_response(status)
+                self.end_headers()
+                self.wfile.write(json.dumps(reply).encode())
 
             def log_message(self, *args):
                 pass
@@ -96,6 +107,8 @@ esac
 ''')
         share = self.base / 'share'
         share.mkdir()
+        (share / 'exchange.awk').write_text((ROOT / 'common/exchange.awk').read_text())
+        (share / 'upgrade.sh').write_text((ROOT / 'common/upgrade.sh').read_text())
         (share / 'VERSION').write_text('1.5.7\n')
         self.legacy = LEGACY
         if REAL_AGE_DIR:
@@ -119,6 +132,8 @@ esac
                         CATTUNNEL_LIB=str(self.lib), CATTUNNEL_RUN=str(self.run),
                         PATH=str(self.bin) + ':/usr/bin:/bin')
         self.requests.clear()
+        self.exchanges.clear()
+        type(self).exchange_response = (200, {"subscription": f"{self.url}/sub"})
         self.responses.clear()
         self.responses['/sub?format=router'] = (200, BUNDLE)
         self.settings(f'{self.url}/sub')
@@ -385,6 +400,136 @@ cat "$TOML"
                                 text=True, capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('age-keygen-x86_64', result.stderr)
+
+
+    def test_one_time_web_link_exchanges_only_code_and_public_key(self):
+        self.updated('import', f'{self.url}/api/go/test-code')
+        self.assertEqual(self.exchanges, [('/api/ct/exchange', {'code': 'test-code', 'device_key': self.public_key()})])
+        saved = (self.etc / 'cattunnel.conf').read_text()
+        self.assertIn(f"SUB_URL='{self.url}/sub'", saved)
+        self.assertNotIn('test-code', saved)
+        self.assertNotIn(self.public_key(), saved)
+
+    def test_one_time_deep_link_decodes_base_and_imports_mirrors(self):
+        from urllib.parse import quote
+        type(self).exchange_response = (200, {'subscription': f'{self.url}/unused', 'mirrors': [f'{self.url}/sub', f'{self.url}/backup']})
+        self.updated('import', f'cattunnel://subscription?code=one-use&base={quote(self.url, safe="")}')
+        self.assertIn(f"SUB_URL='{self.url}/sub | {self.url}/backup'", (self.etc / 'cattunnel.conf').read_text())
+
+    def test_one_time_code_length_and_character_limits(self):
+        self.updated('import', f'{self.url}/api/go/' + 'a' * 256)
+        self.assertEqual(self.exchanges[-1][1]['code'], 'a' * 256)
+        before = (self.etc / 'cattunnel.conf').read_bytes()
+        self.exchanges.clear()
+        for code in ['a' * 257, 'bad!code', '']:
+            with self.subTest(code=code):
+                result = self.call('import', f'{self.url}/api/go/{code}')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('некорректный код', result.stderr)
+                self.assertEqual(self.exchanges, [])
+                self.assertEqual((self.etc / 'cattunnel.conf').read_bytes(), before)
+
+    def test_exchange_errors_preserve_existing_subscription_and_key(self):
+        self.updated()
+        old_settings = (self.etc / 'cattunnel.conf').read_bytes()
+        old_key = (self.etc / 'device.key').read_bytes()
+        for status, message in [(400, 'отклонил'), (404, 'не найдена'), (410, 'истекла'), (503, 'HTTP 503')]:
+            with self.subTest(status=status):
+                type(self).exchange_response = (status, {})
+                response = self.call('import', f'{self.url}/api/go/expired')
+                self.assertNotEqual(response.returncode, 0)
+                self.assertIn(message, response.stderr)
+                self.assertEqual((self.etc / 'cattunnel.conf').read_bytes(), old_settings)
+                self.assertEqual((self.etc / 'device.key').read_bytes(), old_key)
+                self.assertTrue((self.etc / 'servers.bundle').read_bytes().startswith(BUNDLE))
+                self.assertEqual(list(self.run.glob('exchange.*')), [])
+
+    def test_invalid_exchange_reply_never_replaces_saved_url(self):
+        before = (self.etc / 'cattunnel.conf').read_bytes()
+        for reply in [{}, {'mirrors': ['file:///etc/passwd']}, {'subscription': 'https://bad/a\nb'}, {'mirrors': [123]}]:
+            with self.subTest(reply=reply):
+                type(self).exchange_response = (200, reply)
+                response = self.call('import', f'{self.url}/api/go/invalid')
+                self.assertNotEqual(response.returncode, 0, response.stdout)
+                self.assertEqual((self.etc / 'cattunnel.conf').read_bytes(), before)
+
+    def test_config_clears_hex_prefix_and_preserves_endpoint_settings(self):
+        endpoint = '''[endpoint]
+addresses = ["192.0.2.2:443", "[2001:db8::2]:443"]
+has_ipv6 = true
+client_random = "aabbcc"
+client_random_auth_key = "preserved-auth-key"
+tls_profile = "firefox"
+anti_dpi = true
+anti_dpi_mode = 4
+anti_dpi_desync = "-o1+s -d3+s"
+h2_padding_frames = 8
+h2_padding_frames_min = 2
+h2_padding_per_stream = true
+h2_padding_min_bytes = 16
+h2_padding_max_bytes = 64
+h2_padding_stream_bytes = 4096
+h2_padding_session_bytes = 16384
+block_quic = true
+keepalive_interval_secs = 30
+keepalive_signal = true
+session_lifetime_secs = 600
+'''
+        (self.etc / 'servers.bundle').write_text('# cattunnel-router 1\n@server de R0VS auto=0\n' + endpoint + '@end\n')
+        self.executable(self.bin / 'ip', '#!/bin/sh\nexit 0\n')
+        result = self.call('config')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('client_random = ""', result.stdout)
+        self.assertNotIn('aabbcc', result.stdout)
+        self.assertIn('has_ipv6 = false', result.stdout)
+        self.assertIn('addresses = ["192.0.2.2:443"]', result.stdout)
+        for line in endpoint.splitlines():
+            if line and not line.startswith(('addresses', 'has_ipv6', 'client_random =')):
+                self.assertIn(line, result.stdout)
+
+    def test_keenetic_dns_comes_from_ndmc(self):
+        self.executable(self.bin / 'ndmc', '#!/bin/sh\n[ "$*" != "-c show ip name-server" ] || echo "    address: 192.0.2.53"\n')
+        source = self.script.read_text()
+        source = source.replace('/tmp/resolv.conf.d/resolv.conf.auto', str(self.base / 'no-wan-resolv'))
+        functions = source[source.index('wan_dns() {'):source.index('WAN_WHY=')]
+        result = subprocess.run(['sh', '-eu', '-c', functions + '\nwan_dns'], env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '192.0.2.53')
+
+
+    def test_ipv6_literal_uses_hostname_a_when_wan_has_no_ipv6(self):
+        (self.etc / 'servers.bundle').write_text('''# cattunnel-router 1
+@server de R0VS auto=0
+[endpoint]
+hostname = "endpoint.example"
+addresses = ["[2001:db8::2]:443"]
+has_ipv6 = true
+@end
+''')
+        self.executable(self.bin / 'ip', '#!/bin/sh\nexit 0\n')
+        self.executable(self.bin / 'ndmc', '#!/bin/sh\necho "address: 192.0.2.53"\n')
+        self.executable(self.bin / 'nslookup', '#!/bin/sh\necho "Name: endpoint.example"\necho "Address: 192.0.2.2"\n')
+        result = self.call('config')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('addresses = ["192.0.2.2:443"]', result.stdout)
+        self.assertIn('has_ipv6 = false', result.stdout)
+        self.assertIn('hostname = "endpoint.example"', result.stdout)
+
+
+    def test_ipv4_only_entware_devices_start_without_ip6tables(self):
+        (self.etc/'cattunnel.conf').write_text("MODE='tun'\nDEVICES='02:00:00:00:00:02'\nDNS='router'\nKILLSWITCH='on'\n")
+        self.executable(self.bin/'ip', '''#!/bin/sh
+case "$*" in 'rule del'*|'-6 rule del'*) exit 1 ;; esac
+exit 0
+''')
+        self.executable(self.bin/'iptables', '#!/bin/sh\necho "$*" >> "'+str(self.base/'iptables.trace')+'"\nexit 0\n')
+        # Explicitly remove the family at the helper boundary, independent of host tools.
+        share = self.base/'share/upgrade.sh'
+        share.write_text(share.read_text() + '\nguard_family() { [ "$1" != ip6tables ]; }\n')
+        result = self.call('devices', 'on')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.run/'devices.on').exists())
+        self.assertIn('-A CATTUNNEL_DEV -m mac --mac-source 02:00:00:00:00:02', (self.base/'iptables.trace').read_text())
 
 
 if __name__ == '__main__':

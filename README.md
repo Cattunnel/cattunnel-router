@@ -1,12 +1,13 @@
 # CatTunnel для роутеров
 
-Версия [CatTunnel](https://github.com/Cattunnel/cattunnel) для роутеров: **OpenWrt** (23.05, 24.10, 25.x; страницы в LuCI), **Keenetic** и **ASUS Merlin** (Entware; своя веб-страница). Роутер держит туннель TrustTunnel - тот же движок с доработками, что в приложении (анти-DPI 1-3 и «авто», своя строка, отпечаток TLS, маскировка HTTP/2, отключение QUIC), а управляется командой `cattunnel`, страницами LuCI или веб-страницей.
+Версия [CatTunnel](https://github.com/Cattunnel/cattunnel) для роутеров: **OpenWrt** (23.05, 24.10, 25.x; страницы в LuCI), **Keenetic** и **ASUS Merlin** (Entware; своя веб-страница). Роутер использует туннель TrustTunnel с теми же доработками, что приложение (анти-DPI 1-3 и «авто», своя строка, отпечаток TLS, маскировка HTTP/2, отключение QUIC), а управляется командой `cattunnel`, страницами LuCI или веб-страницей.
 
-Подписка - та же ссылка, что в приложении; сервер подписок должен отдавать список в формате для роутера (`?format=router`, строка `# cattunnel-router 1` в начале). При импорте или первом обновлении роутер создаёт свой ключ устройства (`device.key`) и отправляет открытый ключ серверу. Старый ключ пользователя (`age.key`) остаётся запасным для прежних серверов.
+Для импорта подходят одноразовая ссылка из бота `/api/go/<код>` и `cattunnel://subscription?code=...&base=...`; роутер обменивает код на постоянные адреса подписки с привязкой к своему открытому ключу. Прежняя постоянная ссылка также поддерживается; сервер подписок должен отдавать список в формате для роутера (`?format=router`, строка `# cattunnel-router 1` в начале).
 
-> Аккаунт создан отдельно от автора, и это сделано сознательно: проект разрабатывался закрыто с сентября 2026 года, а публичным стал в октябре без привязки к личности разработчика. По той же причине история разработки до публикации не перенесена, и репозиторий начинается с уже готового кода. Пакеты публикуются только в разделе релизов этого репозитория.
+При импорте или первом обновлении роутер создаёт свой ключ устройства (`device.key`) и отправляет открытый ключ серверу. Старый ключ пользователя (`age.key`) остаётся запасным для прежних серверов; одноразовый код не записывается в настройки.
 
-**Установка одной командой** (сам выбирает пакет, проверяет роутер до установки, сверяет подпись и SHA-256):
+Установщик выбирает пакет по системе и процессору, затем проверяет ресурсы роутера и SHA-256 скачанных файлов. Первая команда ниже загружает `install.sh` по HTTPS; проверка его подписи выполняется отдельно, а при `cattunnel upgrade` она обязательна.
+
 ```
 curl -fsSLO https://github.com/Cattunnel/cattunnel-router/releases/latest/download/install.sh && sh install.sh
 ```
@@ -20,10 +21,9 @@ curl -fsSLO https://github.com/Cattunnel/cattunnel-router/releases/latest/downlo
 
 ## Пакеты
 
-`./build_packages.sh <версия>` → `build/`:
+Скрипт `./build_packages.sh <версия>` сохраняет пакеты в `build/`, по умолчанию собирая aarch64, armv7 и mipsel. Для x86_64 или mips архитектуру нужно передать аргументом; `.apk` создаются только при наличии исполняемого `APK` с командой `mkpkg`.
 
-Какой пакет: на роутере `uname -m` (и для MIPS - порядок байт: `opkg print-architecture`,
-`mipsel_*` = little-endian).
+Архитектуру роутера показывает `uname -m`, а для MIPS дополнительно нужен порядок байт из `opkg print-architecture`. Сборщик поддерживает mips big-endian, однако `install.sh` пока отвергает такую систему; в этом случае автоматический подбор пакета недоступен.
 
 | Файл | Куда |
 |---|---|
@@ -32,30 +32,27 @@ curl -fsSLO https://github.com/Cattunnel/cattunnel-router/releases/latest/downlo
 | `cattunnel_<ver>_openwrt-armv7.ipk` | OpenWrt, `armv7l` |
 | `cattunnel_<ver>_entware-mipsel.ipk` | Keenetic на MT7621 (в т.ч. SmartBox Giga KN-1913), Entware `mipsel-3.4` |
 | `cattunnel_<ver>_entware-aarch64.ipk` | Keenetic / ASUS Merlin с Entware `aarch64-3.10` |
-| `cattunnel_<ver>_entware-armv7.ipk` | ASUS Merlin с Entware `armv7sf-k3.2` (на ядре 2.6 / `armv7sf-k2.6` - не проверено) |
+| `cattunnel_<ver>_entware-armv7.ipk` | ASUS Merlin с Entware `armv7sf-k3.2` (ядро 2.6 / `armv7sf-k2.6` установщик отвергает) |
 | `cattunnel_<ver>_openwrt-x86_64.ipk`, `cattunnel_<ver>_entware-x86_64.ipk` | OpenWrt / Entware на x86_64 (виртуальные машины, мини-ПК) |
 | `cattunnel-<ver>-r0_openwrt25-<arch>.apk` | OpenWrt 25.x (apk) |
 | `luci-app-cattunnel_<ver>_openwrt-all.ipk` | страницы LuCI для OpenWrt 23.05/24.10 (opkg) |
 | `luci-app-cattunnel-<ver>-r0_openwrt25.apk` | страницы LuCI для OpenWrt 25.x (apk) |
 
-`Architecture: all` - бинарники статические; при установке пакет сам запускает ядро и
-откатывается, если процессор не тот. Внутри: `cattunnel`, `trusttunnel_client` (~7-12 МБ),
-`age` 1.3.2 (~5 МБ), `age-keygen` из того же исходника, лицензии и наши патчи ядра (`/usr/share/doc/cattunnel/`).
+Метка `Architecture: all` у `.ipk` и `noarch` у `.apk` относится к пакетному менеджеру: вложенные статические бинарники всё равно собраны для конкретного процессора. `preinst` проверяет архитектуру, платформу и ресурсы; `postinst` дополнительно запускает `trusttunnel_client --version`, поскольку apk 3 может продолжить установку после отказа `preinst`.
 
-Сборка с нуля: ядро - `engine/build_router.sh` (zig, см. шапку скрипта) из TrustTunnelClient
-v1.3.0-beta.1 с патчами `engine/0001-anti-dpi-desync.patch` (анти-DPI) и
-`engine/0002-network-monitor-policy-routing.patch` (см. «Что нового в 1.5.5»);
-age и age-keygen собираются из одного исходника age 1.3.2: `go build filippo.io/age/cmd/age` и `go build filippo.io/age/cmd/age-keygen` (CGO_ENABLED=0, GOARCH под роутер, softfloat). В `ROUTER_BIN` нужны оба файла: `age-<arch>` и `age-keygen-<arch>`; сборка пакета без age-keygen прерывается.
+Для `.apk` версия преобразуется в формат apk: например, суффикс `-b1` становится `_beta1-r0`, а `-rc1` - `_rc1-r0`. В пакет входят `cattunnel`, `trusttunnel_client`, `age`, `age-keygen`, лицензии и патчи движка. Версия age не закреплена в `build_packages.sh`: сборщик использует готовые бинарники из `ROUTER_BIN`, поэтому её нужно сверять с исходниками этих бинарников.
+
+Скрипт `engine/build_router.sh` закрепляет ревизию `8d58a15d` ветки release/1.5.7 TrustTunnelClient: это исправление Ed25519 поверх ревизии `4514f9f1`, использованной Android 1.5.8 и роутерными сборками 31 октября. На aarch64, armv7 и x86_64 выбран `openssl/boring-2026-05-08@adguard/oss` с `SSL_set_custom_client_random` и ML-DSA; на mips/mipsel остаётся `openssl/4.0.2@adguard/oss`, поэтому TLS-ключ авторизации `client_random_auth_key` (тег 0x0F) на mips/mipsel не работает. Фактическая готовность бинарников и их размеры фиксируются в отчёте сборки.
+
+Утилиты age и age-keygen собираются из одного исходника age: `go build filippo.io/age/cmd/age` и `go build filippo.io/age/cmd/age-keygen` (CGO_ENABLED=0, GOARCH под роутер, softfloat). В `ROUTER_BIN` нужны оба файла: `age-<arch>` и `age-keygen-<arch>`; сборка пакета без age-keygen прерывается.
 
 ## Установка
 
 ### Одной командой (install.sh)
-`build_packages.sh` кладёт рядом с пакетами `install.sh` (+ `install.sh.sig`, подпись Ed25519 тем же
-ключом, что `latest.json` и Linux-релизы - `cattunnel-release.pub.pem`). Он сам определяет систему
-(OpenWrt opkg / OpenWrt 25 apk / Entware) и процессор, проверяет **до** установки место, память,
-/tmp, ядро, tun, скачивает пакет с зеркал (`ROUTER_MIRRORS`, по умолчанию
-`https://github.com/Cattunnel/cattunnel-router/releases/latest/download`) и сверяет SHA-256 с хэшами, вшитыми в сам `install.sh`;
-после установки проверяет, что движок запускается, иначе удаляет пакет.
+`build_packages.sh` создаёт `install.sh` с хэшами пакетов, а при наличии ключа подписи добавляет `install.sh.sig` и подпись `SHA256SUMS`. Установщик определяет OpenWrt с opkg, OpenWrt с apk или Entware, проверяет память от 64 МБ, ядро Linux от 3.2, место на диске и в `/tmp`, затем сверяет SHA-256 пакета с данными внутри скрипта.
+
+При обновлении через `install.sh` прежние файлы и база пакетов сохраняются до замены; отказ пакетного менеджера считается ошибкой и вызывает откат. При обновлении работающей службы с включённым kill switch временная блокировка сохраняется до успешной проверки туннеля или истечения срока восстановления и ограничивает транзит выбранных `DEVICES`, а при пустом списке - всего LAN; для резервной копии требуется дополнительное место в `/tmp`.
+
 ```
 sh install.sh --check          # только проверить
 sh install.sh                  # поставить / обновить (+ LuCI, если она есть)
@@ -63,28 +60,35 @@ sh install.sh --reinstall      # переставить ту же версию
 sh install.sh --file /tmp/<пакет>   # без интернета (scp), хэш всё равно сверяется
 sh install.sh --from /tmp/ct   # без интернета: все файлы релиза в папке (пакет + LuCI), хэши сверяются
 ```
-Настройки лежат в `/etc/cattunnel/cattunnel.conf` (Entware: `/opt/etc/cattunnel/cattunnel.conf`) (не в uci): `cattunnel settings` - показать,
-`cattunnel set ИМЯ значение` или LuCI - поменять.
-Проверить подпись на ПК: `openssl pkeyutl -verify -pubin -inkey cattunnel-release.pub.pem -rawin -in install.sh -sigfile <(base64 -d install.sh.sig)`.
+Настройки хранятся в `/etc/cattunnel/cattunnel.conf`, а на Entware - в `/opt/etc/cattunnel/cattunnel.conf`; UCI для них не используется. Команда `cattunnel settings` показывает значения, `cattunnel set ИМЯ значение` изменяет их; за один вызов можно передать несколько пар, например `cattunnel set MODE tun KILLSWITCH on`.
 
-apk 3 (OpenWrt 25) ставит пакет, даже если preinst его отверг; тогда postinst удаляет бинарники,
-выключает автозапуск и оставляет `/etc/cattunnel/WRONG_ARCH` - `cattunnel` и LuCI объясняют, что
-делать, `install.sh` переставляет нужный пакет сам.
+Обычная остановка через `cattunnel stop`, init-скрипт или кнопку «Остановить» возвращает DNS и правила устройств к прямому доступу, сохраняя настройки и подписку. Перезапуск службы и переключение сервера используют внутреннюю остановку с сохранением блокировки; при действующей `upgrade.pending` обычный `stop` также сохраняет защиту. Для явного выхода во время незавершённого обновления предназначен `cattunnel stop --force`, который вызывают и кнопки «Остановить» в LuCI и веб-странице.
+
+Lock обновления содержит PID, время и идентификатор загрузки; умерший процесс или возраст от 15 минут позволяют повторную установку. Метка `upgrade.pending` действует 15 минут, а завершившийся установщик ждёт подключения до 5 минут, затем снимает временный барьер; для остановленной службы и Entware с `autostart.off` барьер установки не включается.
+
+Команда `set` принимает перечисленные ниже имена; значения сохраняются в файле, а параметры движка применяются при перезапуске. Переключение `MODE` само по себе не запускает службу и не меняет профиль внешнего прокси.
+
+- Режим и служба: `MODE socks|tun`, `SOCKS <IPv4:порт>`, `TUN_DEV <имя>`, `LOGLEVEL error|warn|info|debug`, `SERVER <ключ>`, `SUB_URL <ссылка>`.
+- Маршрутизация: `KILLSWITCH on|off`, `RU_DIRECT on|off`, `DNS router|tunnel`, `MTU 1200-1500`, `DEVICES '<MAC или имена через пробел>'`, `IDLE_STOP <секунды>`.
+- Сторож: `FAILOVER on|off`, `AUTO_WAIT <секунды>` (15), `CHECK_EVERY <секунды>` (30), `CHECK_FAILS <число>` (4), `BACK_AFTER <секунды>` (1800).
+- Переопределения подписки: `OVR_TLS chrome|firefox|safari|okhttp`, `OVR_DPI off|1|2|3|auto|custom`, `OVR_DESYNC '<строка>'`, `OVR_PADDING <число>`, `OVR_QUIC on|off`; пустая строка возвращает значение подписки. Для сервера доступны `SRV_<ключ>_TLS|DPI|DESYNC|PADDING|QUIC`: пустая строка наследует общее переопределение, `sub` возвращает значение подписки.
+- Веб-страница и интеграция: `WEB on|off`, `WEB_PORT <число>`, `NIKKI on|off`; для настройки службы предназначены `cattunnel web password|on|off|status` и `cattunnel nikki on|off|status`.
+
+Для отдельной проверки подписи на ПК применяется `openssl pkeyutl -verify -pubin -inkey cattunnel-release.pub.pem -rawin -in install.sh -sigfile <(base64 -d install.sh.sig)`. При несовместимом бинарнике `postinst` оставляет `WRONG_ARCH`, а `install.sh` повторяет установку подходящего пакета даже при совпадении версии; неудачная первая установка удаляется, обновление восстанавливает сохранённые файлы.
 
 ### OpenWrt 23.05 / 24.10 (opkg)
 ```
 opkg update && opkg install curl kmod-tun
 opkg install /tmp/cattunnel_<ver>_openwrt-<arch>.ipk
-cattunnel import 'https://…/api/ct/<токен>' 'AGE-SECRET-KEY-1…'   # те же ссылка и ключ, что в приложении
+cattunnel import '<ссылка подписки>'   # ключ устройства создаётся автоматически
 cattunnel list                       # серверы; * - выбранный
 cattunnel use nl                     # выбрать
 /etc/init.d/cattunnel start
 cattunnel test                       # «ok: интернет через туннель есть»
 ```
-Режим tun на голом OpenWrt: `cattunnel set MODE tun && cattunnel firewall on && /etc/init.d/cattunnel restart`
-(`firewall on` создаёт зону fw4 `cattunnel` на `tt0` с маскарадом и пересылку lan → cattunnel).
+На OpenWrt без внешнего прокси режим `tun` включается командой `cattunnel set MODE tun && cattunnel firewall on && /etc/init.d/cattunnel restart`. Команда `firewall on` создаёт зону fw4 `cattunnel` для `tt0` с маскарадом и пересылкой из LAN в туннель.
 
-OpenWrt 25.x - пакеты `…_openwrt25-<arch>.apk`: `apk add --allow-untrusted /tmp/<пакет>.apk` (или install.sh).
+На OpenWrt 25.x используются пакеты `…_openwrt25-<arch>.apk` и команда `apk add --allow-untrusted /tmp/<пакет>.apk`. Обновление с резервной копией выполняется через `install.sh`; прямая команда пакетного менеджера не создаёт такую копию.
 
 ### Только некоторые устройства через туннель (DEVICES, режим tun)
 ```
@@ -92,41 +96,31 @@ cattunnel set MODE tun DEVICES 'aa:bb:cc:dd:ee:ff S22*'   # MAC, имя или �
 cattunnel firewall on && /etc/init.d/cattunnel restart             # Keenetic: /opt/etc/init.d/S99cattunnel restart
 cattunnel devices status
 ```
-Через туннель идут только эти устройства, остальной дом - напрямую. **Туннель по требованию**
-(`IDLE_STOP`, по умолчанию 600 с): пока устройства не ходят в интернет, движок не запущен и к серверу
-никто не подключается; первый их пакет в интернет (счётчик правила, без локальных сетей/multicast) - туннель поднимается за ~5-7 с (с kill switch эти секунды они получают отказ, без него - идут напрямую);
-IDLE_STOP секунд тишины - гаснет. Телефон дома что-то шлёт постоянно - для него туннель держится, пока
-он в сети. `IDLE_STOP 0` - туннель всегда поднят. Как устроено: движок не ставит
-общих маршрутов (`included_routes = []`), пакеты устройств помечаются по MAC (OpenWrt - nftables
-`inet cattunnel_dev`, Keenetic/Merlin - iptables `CATTUNNEL_DEV`), помеченные идут по таблице 218:
-всё в `tt0`, локальные сети - обратно в main (`throw`), туннель пропал - `blackhole` (kill switch только
-для них; IPv6 так же). DNS через туннель (`DNS tunnel`) - тоже только для них: их запросы на :53
-перенаправляются на семейный DNS из подписки, dnsmasq остальных не трогается. **Телефоны с «частным» (меняющимся) MAC
-указывайте по имени** - имя, которое устройство сообщает роутеру, не меняется вместе с MAC. Имена берутся
-из аренд DHCP (OpenWrt, ASUS Merlin) и из списка устройств Keenetic (`ndmc show ip hotspot`: и имя
-устройства, и имя, данное в Keenetic); новое имя/MAC подхватывается само - сторож сверяет каждые 30 с.
-`cattunnel devices status` покажет, что найдено. В LuCI: Настройки → «Только эти
-устройства» (галочки по списку устройств в сети). Пусто - весь дом, как раньше.
+В режиме `tun` непустой `DEVICES` направляет в туннель только выбранные устройства, оставляя остальные на обычном маршруте. При пустом списке туннелем пользуется весь LAN; в режиме `socks` обычную маршрутизацию задаёт внешний прокси, а `DEVICES` определяет только область временной блокировки при обновлении и перезапуске.
+
+Параметр `IDLE_STOP` по умолчанию равен 600 с: до первого обращения устройства в интернет движок не работает, после периода тишины он снова останавливается. Первый пакет учитывается счётчиком, затем туннель поднимается за несколько секунд; `IDLE_STOP 0` отключает ожидание и остановку по тишине.
+
+Пакеты выбранных устройств помечаются по MAC: OpenWrt использует таблицу nftables `inet cattunnel_dev`, Entware - цепочку iptables `CATTUNNEL_DEV`. Метка направляет пакеты в таблицу маршрутизации 218 с выходом через `tt0`, исключениями для локальных сетей и маршрутом `unreachable` при включённом kill switch; правила применяются и к IPv6.
+
+Имена устройств берутся из DHCP, а на Keenetic также из `ndmc show ip hotspot`; сторож сверяет их каждые 30 с. Имя или префикс со звёздочкой позволяет находить телефон после смены частного MAC, однако без сообщаемого имени потребуется постоянный MAC; результат показывает `cattunnel devices status`.
+
+При `DNS tunnel` запросы выбранных устройств на порт 53 перенаправляются на DNS из подписки, а DNS остальных устройств остаётся прежним. В LuCI список задаётся в разделе «Настройки → Только эти устройства»; при обновлении временная блокировка действует только на этот список до восстановления туннеля.
 
 ### Российские сайты - напрямую (RU_DIRECT, режим tun; по умолчанию включено)
-Как «Российские сервисы» в приложении: домены `*.ru`/`*.su`/`*.рф`… + встроенный список крупных
-сервисов (`/usr/share/cattunnel/ru_services.txt`, тот же, что в приложении) + **сети geoip:ru**
-(runetfreedom/geoip, запасной - ipverse; ~26 тыс. IPv4/IPv6), которые CatTunnel скачивает сам раз в
-20 часов (`$ETC/ru.cidr`; не скачалось - работает прежний/встроенный). Всё это - исключения движка:
-что пришло в туннель к российскому адресу, движок отправляет напрямую с роутера. Без DNS, поэтому
-работает и в DEVICES, и для vk.com/Госуслуг/банков (через зарубежный выход они не открываются).
-`cattunnel ru status`, `cattunnel ru update`. Выключить: `cattunnel set RU_DIRECT off`.
+Параметр `RU_DIRECT on` добавляет исключения для российских доменов, встроенного списка сервисов и загружаемых сетей geoip:ru. Встроенный файл находится в `/usr/share/cattunnel/ru_services.txt` (Entware: `/opt/usr/share/cattunnel/ru_services.txt`), скачанные сети сохраняются в `ru.cidr` и обновляются раз в 20 часов; при сбое сохраняется прежний список.
+
+Исключения применяет движок к трафику внутри `tun`, включая пакеты выбранных устройств; сетевые исключения не требуют разрешения доменного имени. Проверка и ручное обновление доступны через `cattunnel ru status` и `cattunnel ru update`, отключение - через `cattunnel set RU_DIRECT off` с последующим перезапуском.
 
 ### Схема с nikki/mihomo
 1. Поставить пакет и подписку, как выше; режим `socks` уже по умолчанию.
 2. `cattunnel mihomo` - печатает готовые строки для `/etc/nikki/profiles/main.yaml`:
    прокси `CatTunnel` (socks5, udp), группа `VPN` (fallback: CatTunnel → VLESS-REALITY),
-   и правила **DIRECT для самого туннеля** (процесс `trusttunnel_client` и адреса наших
-   серверов) - их ставить самыми первыми, иначе соединение движка с сервером уйдёт в mihomo
+   и правила **DIRECT для самого туннеля** (процесс `trusttunnel_client` и адреса серверов
+   CatTunnel) - их ставить самыми первыми, иначе соединение движка с сервером уйдёт в mihomo
    и завернётся в себя.
 3. В селекторы `PROXY`, `YOUTUBE`, `FINAL` добавить `VPN` первым. `service nikki restart`.
 4. Проверка: `cattunnel test`; в LuCI → Nikki группа `VPN` показывает CatTunnel живым.
-VLESS остаётся запасным: если CatTunnel не отвечает, fallback сам переключится на него.
+В этой схеме VLESS остаётся запасным выходом группы `fallback`, а её проверку доступности выполняет mihomo. Такой резерв относится к настройкам mihomo и отличается от `FAILOVER`, который переключает серверы внутри подписки CatTunnel.
 
 ### Веб-страница на Keenetic / ASUS Merlin
 В родной веб-интерфейс Keenetic встроиться нельзя, поэтому у CatTunnel своя страница - это **те же
@@ -143,11 +137,10 @@ cattunnel web on                     # → http://<домашний адрес �
 не пошлёт без CORS), значения проверяет `cattunnel set`. На странице: состояние, запуск/остановка,
 устройства сети с галочками «через VPN» (по имени, если есть - переживёт смену MAC), сервер,
 kill switch, российские сайты напрямую, минуты тишины. `cattunnel web off` - выключить.
-На OpenWrt то же самое - в LuCI (Службы → CatTunnel).
+На OpenWrt страницы доступны в LuCI через «Службы → CatTunnel», а отдельную веб-страницу также можно включить командой `cattunnel web on`. Команда `cattunnel web status` показывает состояние страницы; пароль задаётся до её включения.
 
 ### Keenetic (Entware)
-Нужны компоненты «OPKG» и «Модули ядра подсистемы Netfilter», Entware во внутренней памяти
-или на отдельной флешке (не на носителе с вашими файлами: Entware его размечает под себя).
+Для Keenetic нужны компоненты «OPKG» и «Модули ядра подсистемы Netfilter», а также установленный Entware. Он может размещаться во внутренней памяти или на отдельном накопителе; носитель с нужными файлами не подходит для переразметки под Entware.
 ```
 opkg update && opkg install curl
 opkg install /tmp/cattunnel_<ver>_entware-mipsel.ipk
@@ -155,12 +148,10 @@ cattunnel import '…' 'AGE-SECRET-KEY-1…' && cattunnel list
 cattunnel set MODE tun                # весь LAN в туннель; для socks - оставить как есть
 /opt/etc/init.d/S99cattunnel start
 ```
-Keenetic пересобирает iptables сам; хук `/opt/etc/ndm/netfilter.d/50-cattunnel.sh` возвращает
-правила (маскарад и FORWARD для `tt0`).
+Keenetic пересобирает iptables при изменениях сети, поэтому хук `/opt/etc/ndm/netfilter.d/50-cattunnel.sh` возвращает правила CatTunnel. Помимо маскарада и FORWARD для `tt0`, он восстанавливает метки устройств, доступ к веб-странице и временную блокировку незавершённого обновления.
 
 ### ASUS Merlin (Entware)
-Как Keenetic, пакет `entware-aarch64` или `entware-armv7`. Merlin тоже пересобирает iptables:
-добавить в `/jffs/scripts/nat-start` строку `/opt/bin/cattunnel firewall on` (и `chmod +x`).
+На ASUS Merlin применяются пакеты Entware для подходящего процессора, обычно `entware-aarch64` или `entware-armv7`. Для возврата правил после пересборки iptables в `/jffs/scripts/nat-start` добавляется `/opt/bin/cattunnel firewall on`, а сам файл должен быть исполняемым; этот хук возвращает правила туннеля, полноценная проверка временной блокировки обновления на Merlin не выполнена.
 
 ## Что нового
 
@@ -194,26 +185,28 @@ Keenetic пересобирает iptables сам; хук `/opt/etc/ndm/netfilte
   подряд) - переход на следующий по порядку подписки (`FAILOVER on`), раз в 30 минут - попытка
   вернуться на выбранный. Пропал интернет у самого роутера - серверы не перебираются.
 - Настройки - `/etc/cattunnel/cattunnel.conf` (`cattunnel set …`), на Entware всё под `/opt`.
-- Свои сайты и IP напрямую: `cattunnel direct add|del|list|clear` (режим tun).
+- Свои сайты и IP напрямую: `cattunnel direct add|del|set|list|clear` (режим tun).
 - Обновление: раз в сутки проверяется `install.sh` в последнем релизе (подпись Ed25519);
-  `cattunnel upgrade check|now`, на странице «Состояние» - кнопка «Обновить».
+  `cattunnel upgrade [check]`, на странице «Состояние» - кнопка «Обновить».
 - Автозапуск при загрузке переживает переустановку пакета: `cattunnel autostart on|off|status`.
 - `cattunnel doctor` - «соседи по роутеру»: другие VPN, прокси, DNS-менеджеры, pbr/mwan3, nikki, память и swap;
   `cattunnel nikki on|off|status` - встроить CatTunnel в профиль nikki (с резервной копией).
 
 ## Риски
-- Память: ядро 7-12 МБ на диске, ОЗУ при работе - проверить на 128 МБ моделях.
+- Размер движка зависит от архитектуры и SSL-библиотеки; для новой сборки требуется повторная проверка свободного места. Потребление ОЗУ на моделях со 128 МБ нужно проверять отдельно.
 - Режим tun и nikki в режиме tun одновременно не включать - два VPN будут спорить за маршруты.
 
 ## Как тестировалось
 
-Проверки - октябрь 2026, на настоящей подписке.
+Ниже перечислены проверки, выполненные в октябре 2026 года на рабочей подписке. Они описывают проверенные тогда версии; изменения жизненного цикла и импорта требуют отдельной проверки текущей сборки.
+
+В ноябре 2026 года временная блокировка проверена отдельно: 72 сочетания OpenWrt 24.10/25 и Entware, tun/socks, пустого/непустого DEVICES и шести операций прошли со счётчиками правил и WAN-захватом. Использован тестовый движок с реальными TUN и SOCKS5 в изолированных контейнерах, поэтому результат подтверждает правила и жизненный цикл службы, но не совместимость протокола TrustTunnel или ускорения на настоящем роутере.
 
 **Стенды**
 - OpenWrt 24.10.6 и 25.12.5 x86_64 в QEMU/KVM (256 МБ ОЗУ), OpenWrt 24.10.6 aarch64 в QEMU (cortex-a53), второй виртуальный компьютер в LAN роутера как «устройство».
 - OpenWrt со стеком nikki/mihomo + AdGuard Home + zapret.
 - Entware x86_64 в контейнере.
-- Настоящий **Keenetic** (KN-1913, MT7621 mipsel, KeeneticOS 5.0, Entware во встроенной памяти).
+- Проверенный **Keenetic SmartBox Giga KN-1913** (MT7621 mipsel, KeeneticOS 5.0, Entware во встроенной памяти).
 - Бинарники aarch64, armv7, mipsel - также через qemu-user (запуск, SOCKS, расшифровка age).
 
 **Установка и обновление**
@@ -242,6 +235,3 @@ Keenetic пересобирает iptables сам; хук `/opt/etc/ndm/netfilte
 - Переключение nikki на запасной VLESS при отказе CatTunnel.
 - «SHA-256 не совпал» и «зеркало не отвечает» в `install.sh` - проверено по коду.
 
----
-
-При разработке использовался ИИ-ассистент Claude.
