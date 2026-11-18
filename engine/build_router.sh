@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Router engine: 1.3.0-rc.1-21-g8d58a15d, release/1.5.7; revision 8d58a15de3e0c1e5936bbad51baedff94ceedbf3.
-# Android 1.5.8 / router builds of 31 October used its parent 4514f9f1
-# (1.3.0-rc.1-20-g4514f9f1). This revision adds the MIPS Ed25519 EVP fix.
+# Router engine 1.5.9: 1.3.0-rc.1-27-g82963908; revision 829639089a23b37873f225cbceddf74b71b68c59,
+# the same engine as Android 1.5.9 (connection pool: 2-4 TLS connections, pauses between handshakes).
+# It is based on 8d58a15d (MIPS Ed25519 EVP fix); the dependencies are unchanged.
 # SSL from conanfile.py: aarch64/armv7/x86_64 use
 # openssl/boring-2026-05-08@adguard/oss (custom client random and ML-DSA);
 # mips/mipsel use openssl/4.0.2@adguard/oss, without custom client random.
@@ -17,8 +17,8 @@ set -euo pipefail
 B=${TT_BUILD_ROOT:-$HOME/tt-build}
 SRC=${TT_SRC:-$B/TTC-beta}
 OUT=${TT_OUT:-$B/router-bin}
-REV=8d58a15de3e0c1e5936bbad51baedff94ceedbf3
-VERSION=1.3.0-rc.1-21-g8d58a15d
+REV=829639089a23b37873f225cbceddf74b71b68c59
+VERSION=1.3.0-rc.1-27-g82963908
 JOBS=${TT_JOBS:-2}
 # Never download a missing toolchain implicitly during a router build.
 export RUSTUP_AUTO_INSTALL=0
