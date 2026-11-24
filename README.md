@@ -1,6 +1,6 @@
 # CatTunnel для роутеров
 
-[English](README.en.md)
+English: [README.en.md](README.en.md)
 
 CatTunnel для роутеров: роутерная редакция VPN-клиента [CatTunnel](https://github.com/Cattunnel/cattunnel) для **OpenWrt** (23.05, 24.10, 25.x; страницы в LuCI), **Keenetic** и **ASUS Merlin** (Entware; своя веб-страница). Она закрывает устройства, на которые приложение не поставить (телевизор, приставка, консоль), и использует то же сетевое ядро и ту же подписку, что приложение. Управление: команда `cattunnel`, страницы LuCI или веб-страница.
 
@@ -18,7 +18,7 @@ CatTunnel для роутеров: роутерная редакция VPN-кл�
 
 | Режим | Для кого | Как работает |
 |---|---|---|
-| `socks` (по умолчанию) | OpenWrt с mihomo/nikki (схема nikki + mihomo, [openwrt_vless](https://github.com/PrEvIeS/openwrt_vless)) | SOCKS5 на `127.0.0.1:1080` (TCP и UDP). mihomo сам решает, что пускать в CatTunnel; маршрутизация, zapret и AdGuard Home остаются как были |
+| `socks` (по умолчанию) | OpenWrt с mihomo/nikki (схема nikki + mihomo) | SOCKS5 на `127.0.0.1:1080` (TCP и UDP). mihomo сам решает, что пускать в CatTunnel; маршрутизация, zapret и AdGuard Home остаются как были |
 | `tun` | Роутер без внешнего прокси: OpenWrt без mihomo, Keenetic, ASUS Merlin | устройство `tt0`, движок ставит маршруты, весь LAN или выбранные устройства идут в туннель (локальные сети мимо) |
 
 **Подключение и обход блокировок** (то же ядро, что в приложении 1.5.9.5, ревизия `b59debf4`)
@@ -84,8 +84,9 @@ cattunnel test                       # «ok: интернет через тун�
 | [docs/settings.md](docs/settings.md) | Настройки, режимы, устройства, российские сайты, nikki/mihomo, веб-страница |
 | [docs/how-it-works.md](docs/how-it-works.md) | Подписка, запуск движка, сторож, обновление; риски |
 | [docs/build.md](docs/build.md) | Сборка пакетов, ядра и age |
-| [docs/testing.md](docs/testing.md) | Что и как проверялось |
-| [help/ROUTER.ru.md](help/ROUTER.ru.md) | Справка, которая ставится вместе с пакетом |
+| [shared/CONNECTION.ru.md](shared/CONNECTION.ru.md) | Как устроено подключение (английская: [shared/CONNECTION.en.md](shared/CONNECTION.en.md)) |
+| [docs/testing.md](docs/testing.md) | Тесты и стенд с контейнерами |
+| [help/ROUTER.ru.md](help/ROUTER.ru.md) | Справка, которая ставится вместе с пакетом (английская: [help/ROUTER.en.md](help/ROUTER.en.md)) |
 
 ## Что нового
 

@@ -1,6 +1,6 @@
 # CatTunnel for routers
 
-[Русская версия](README.md)
+Русский: [README.md](README.md)
 
 CatTunnel for routers is the router edition of the [CatTunnel](https://github.com/Cattunnel/cattunnel) VPN client for **OpenWrt** (23.05, 24.10, 25.x; pages in LuCI), **Keenetic** and **ASUS Merlin** (Entware; its own web page). It covers devices where the app cannot be installed (TV, set-top box, console) and uses the same network core and the same subscription as the app. Control: the `cattunnel` command, LuCI pages or the web page.
 
@@ -18,7 +18,7 @@ CatTunnel for routers is the router edition of the [CatTunnel](https://github.co
 
 | Mode | For whom | How it works |
 |---|---|---|
-| `socks` (default) | OpenWrt with mihomo/nikki (the nikki + mihomo setup, [openwrt_vless](https://github.com/PrEvIeS/openwrt_vless)) | SOCKS5 on `127.0.0.1:1080` (TCP and UDP). mihomo itself decides what to send into CatTunnel; routing, zapret and AdGuard Home stay as they were |
+| `socks` (default) | OpenWrt with mihomo/nikki (the nikki + mihomo setup) | SOCKS5 on `127.0.0.1:1080` (TCP and UDP). mihomo itself decides what to send into CatTunnel; routing, zapret and AdGuard Home stay as they were |
 | `tun` | A router without an external proxy: OpenWrt without mihomo, Keenetic, ASUS Merlin | device `tt0`, the engine sets up the routes, the whole LAN or selected devices go into the tunnel (local networks bypass it) |
 
 **Connection and blocking bypass** (the same core as in app 1.5.9.5, revision `b59debf4`)
@@ -52,9 +52,9 @@ CatTunnel for routers is the router edition of the [CatTunnel](https://github.co
 curl -fsSLO https://github.com/Cattunnel/cattunnel-router/releases/latest/download/install.sh && sh install.sh
 ```
 
-The installer picks the package by system and processor, and checks memory, kernel, free space and the SHA-256 of the downloaded files. The first command downloads `install.sh` over HTTPS; verifying its signature is done separately ([docs/install.md](docs/install.md#проверка-подписи) (in Russian)), and during `cattunnel upgrade` it is mandatory.
+The installer picks the package by system and processor, and checks memory, kernel, free space and the SHA-256 of the downloaded files. The first command downloads `install.sh` over HTTPS; verifying its signature is done separately ([docs/install.en.md](docs/install.en.md#signature-check)), and during `cattunnel upgrade` it is mandatory.
 
-Packages by architecture, offline installation, manual installation on OpenWrt, Keenetic and ASUS Merlin: [docs/install.md](docs/install.md) (in Russian).
+Packages by architecture, offline installation, manual installation on OpenWrt, Keenetic and ASUS Merlin: [docs/install.en.md](docs/install.en.md).
 
 ## Setup
 
@@ -68,24 +68,24 @@ cattunnel test                       # "ok: internet through the tunnel works"
 
 `tun` mode on OpenWrt without an external proxy: `cattunnel set MODE tun && cattunnel firewall on && /etc/init.d/cattunnel restart`.
 
-Settings are stored in `/etc/cattunnel/cattunnel.conf` (Entware: `/opt/etc/cattunnel/cattunnel.conf`); `cattunnel settings` shows them, `cattunnel set NAME value` changes them. The list of settings, devices through the VPN, Russian sites directly, integration with nikki/mihomo and the web page: [docs/settings.md](docs/settings.md) (in Russian).
+Settings are stored in `/etc/cattunnel/cattunnel.conf` (Entware: `/opt/etc/cattunnel/cattunnel.conf`); `cattunnel settings` shows them, `cattunnel set NAME value` changes them. The list of settings, devices through the VPN, Russian sites directly, integration with nikki/mihomo and the web page: [docs/settings.en.md](docs/settings.en.md).
 
 On OpenWrt the pages are in LuCI: "Services → CatTunnel". On Keenetic and ASUS Merlin: `cattunnel web password <password>`, then `cattunnel web on` and `http://<router address>:8090`.
 
 ## Building
 
-`./build_packages.sh <version> [arch...]` builds the packages into `build/` from ready core binaries (`engine/build_router.sh`) and a static age. Details: [docs/build.md](docs/build.md) (in Russian).
+`./build_packages.sh <version> [arch...]` builds the packages into `build/` from ready core binaries (`engine/build_router.sh`) and a static age. Details: [docs/build.en.md](docs/build.en.md).
 
 ## Documentation
 
 | File | What it covers |
 |---|---|
-| [docs/install.md](docs/install.md) (in Russian) | Packages, install.sh, OpenWrt, Keenetic, ASUS Merlin, signature verification |
-| [docs/settings.md](docs/settings.md) (in Russian) | Settings, modes, devices, Russian sites, nikki/mihomo, web page |
-| [docs/how-it-works.md](docs/how-it-works.md) (in Russian) | Subscription, engine start, watchdog, update; risks |
-| [docs/build.md](docs/build.md) (in Russian) | Building packages, the core and age |
-| [docs/testing.md](docs/testing.md) (in Russian) | What was tested and how |
-| [help/ROUTER.ru.md](help/ROUTER.ru.md) (in Russian) | The help that is installed together with the package |
+| [docs/install.en.md](docs/install.en.md) | Packages, install.sh, OpenWrt, Keenetic, ASUS Merlin, signature verification |
+| [docs/settings.en.md](docs/settings.en.md) | Settings, modes, devices, Russian sites, nikki/mihomo, web page |
+| [docs/how-it-works.en.md](docs/how-it-works.en.md) | Subscription, engine start, watchdog, update; risks |
+| [docs/build.en.md](docs/build.en.md) | Building packages, the core and age |
+| [docs/testing.en.md](docs/testing.en.md) | Tests and the container lab |
+| [help/ROUTER.en.md](help/ROUTER.en.md) | The help that is installed together with the package |
 
 ## What's new
 
