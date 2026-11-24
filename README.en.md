@@ -21,7 +21,7 @@ CatTunnel for routers is the router edition of the [CatTunnel](https://github.co
 | `socks` (default) | OpenWrt with mihomo/nikki (the nikki + mihomo setup, [openwrt_vless](https://github.com/PrEvIeS/openwrt_vless)) | SOCKS5 on `127.0.0.1:1080` (TCP and UDP). mihomo itself decides what to send into CatTunnel; routing, zapret and AdGuard Home stay as they were |
 | `tun` | A router without an external proxy: OpenWrt without mihomo, Keenetic, ASUS Merlin | device `tt0`, the engine sets up the routes, the whole LAN or selected devices go into the tunnel (local networks bypass it) |
 
-**Connection and blocking bypass** (the same core as in app 1.5.9, revision `82963908`)
+**Connection and blocking bypass** (the same core as in app 1.5.9.5, revision `b59debf4`)
 
 - Anti-DPI: methods 1-3, "Auto" (trying each for 15 s with an internet check, the method that worked is remembered for the server) and a custom string in ByeDPI syntax.
 - TLS fingerprint: `chrome`, `firefox`, `safari`, `okhttp`.
@@ -88,6 +88,11 @@ On OpenWrt the pages are in LuCI: "Services → CatTunnel". On Keenetic and ASUS
 | [help/ROUTER.ru.md](help/ROUTER.ru.md) (in Russian) | The help that is installed together with the package |
 
 ## What's new
+
+**1.5.9.5**
+- The core is the same revision as app 1.5.9.5 (`b59debf4`): IP rotation. If the next server does not
+  answer or refuses, it rests and the tunnel stays on the current one; when every server rests, the next
+  attempt waits for the end of the nearest rest instead of a reconnect storm.
 
 **1.5.9**
 - The core is the same revision as app 1.5.9 (`82963908`): 2-4 TLS connections to the server and a 2-6 s

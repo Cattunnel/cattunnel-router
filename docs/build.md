@@ -6,9 +6,9 @@
 
 ## Ядро
 
-Скрипт `engine/build_router.sh` закрепляет ревизию `82963908` TrustTunnelClient: то же ядро, что в Android 1.5.9 (пул соединений с паузами между рукопожатиями). Оно основано на `8d58a15d` с исправлением Ed25519 для MIPS. На aarch64, armv7 и x86_64 выбран `openssl/boring-2026-05-08@adguard/oss` с `SSL_set_custom_client_random` и ML-DSA; на mips/mipsel остаётся `openssl/4.0.2@adguard/oss`, поэтому TLS-ключ авторизации `client_random_auth_key` (тег 0x0F) на mips/mipsel не работает. Фактическая готовность бинарников и их размеры фиксируются в отчёте сборки.
+Скрипт `engine/build_router.sh` закрепляет ревизию `b59debf4` TrustTunnelClient: то же ядро, что в Android 1.5.9.5 (ротация IP без обрывов, пул соединений с паузами между рукопожатиями, исправление Ed25519 для MIPS). На aarch64, armv7 и x86_64 выбран `openssl/boring-2026-05-08@adguard/oss` с `SSL_set_custom_client_random` и ML-DSA; на mips/mipsel остаётся `openssl/4.0.2@adguard/oss`, поэтому TLS-ключ авторизации `client_random_auth_key` (тег 0x0F) на mips/mipsel не работает. Фактическая готовность бинарников и их размеры фиксируются в отчёте сборки.
 
-Патчи в `engine/` (анти-DPI, монитор сети для policy routing, исправления сборки NativeLibsCommon и DnsLibs) относятся к более ранним версиям ядра. Изменения ревизии `82963908` сверх них (пул соединений, формирователь набивки, браузерные заголовки `CONNECT`, NineLives) в этот репозиторий пока не выложены.
+Патчи в `engine/` (анти-DPI, монитор сети для policy routing, исправления сборки NativeLibsCommon и DnsLibs) относятся к более ранним версиям ядра. Изменения ревизий `82963908` и `b59debf4` сверх них (пул соединений, формирователь набивки, браузерные заголовки `CONNECT`, NineLives, ротация IP) в этот репозиторий пока не выложены.
 
 ## age
 
